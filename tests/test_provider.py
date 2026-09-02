@@ -29,7 +29,8 @@ issue={'number':12,'title':'Fix widget','body':'Issue body','html_url':'https://
 pr=dict(issue, number=13, title='Improve widget', html_url='https://github.com/acme/widgets/pull/13', pull_request={'url':'x'})
 notification={'id':'99','unread':True,'reason':'review_requested','updated_at':'2026-01-02T00:00:00Z','repository':repo,'subject':{'title':'Improve widget','type':'PullRequest','url':os.environ.get('GH_SUBJECT_URL','https://api.github.com/repos/acme/widgets/pulls/13')}}
 if endpoint == 'user/repos': out=[repo]
-elif endpoint == 'search/issues': out={'items':[pr if 'is:pr' in fields.get('q','') else issue]}
+elif endpoint == 'search/issues':
+    is_pr='is:pr' in fields.get('q',''); out={'total_count':2 if is_pr else 4,'items':[pr if is_pr else issue]}
 elif endpoint in ('notifications','repos/acme/widgets/notifications'): out=[notification]
 elif endpoint == 'repos/acme/widgets': out=repo
 elif endpoint == 'repos/acme/widgets/issues/12': out=issue
@@ -82,6 +83,7 @@ class ProviderTest(unittest.TestCase):
                          ["overview", "issues", "pull-requests", "notifications"])
         self.assertIn("document", rows[0])
         self.assertTrue(all("submenu" in row for row in rows[1:4]))
+        self.assertEqual([row["trailingIcon"] for row in rows[1:4]], ["4", "2", "1"])
         document = self.run_provider("repo-document", "acme/widgets")
         self.assertEqual(document["title"], "acme/widgets")
         self.assertEqual(len(document["actions"]), 2)

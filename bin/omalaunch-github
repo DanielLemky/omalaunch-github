@@ -151,14 +151,37 @@ def global_search_menu():
     return rows[:100]
 
 
+def repository_counts(name):
+    def search_count(kind):
+        data = gh("search/issues", {
+            "q": f"is:{kind} is:open repo:{name}", "per_page": "1"
+        })
+        return int(data.get("total_count", len(data.get("items", []))))
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        issue_job = pool.submit(search_count, "issue")
+        pull_job = pool.submit(search_count, "pr")
+        notification_job = pool.submit(gh, f"repos/{name}/notifications", {
+            "all": "false", "participating": "false", "per_page": "100"
+        })
+        return issue_job.result(), pull_job.result(), len(notification_job.result())
+
+
 def repository_menu(name):
     encoded = name
     url = f"https://github.com/{name}"
+    issue_count, pull_count, notification_count = repository_counts(name)
+    issues = category("issues", "Issues", ["repo-issues", encoded])
+    issues["trailingIcon"] = str(issue_count)
+    pulls = category("pull-requests", "Pull Requests", ["repo-pull-requests", encoded])
+    pulls["trailingIcon"] = str(pull_count)
+    repo_notifications = category("notifications", "Notifications", ["repo-notifications", encoded])
+    repo_notifications["trailingIcon"] = "100+" if notification_count >= 100 else str(notification_count)
     return [
         {"id": "overview", "label": "Overview", "document": {"command": [SELF, "repo-document", name]}},
-        category("issues", "Issues", ["repo-issues", encoded]),
-        category("pull-requests", "Pull Requests", ["repo-pull-requests", encoded]),
-        category("notifications", "Notifications", ["repo-notifications", encoded]),
+        issues,
+        pulls,
+        repo_notifications,
         {"id": "open", "label": "Open on GitHub", "command": ["xdg-open", url], "closeOnSuccess": True},
         {"id": "copy-url", "label": "Copy URL", "command": ["wl-copy", "--", url]},
     ]
