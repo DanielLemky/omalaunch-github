@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "quantumfire.github",
+  "capability": "github",
+  "mode": "menu",
+  "label": "GitHub",
+  "icon": "󰊤",
+  "description": "Repositories, issues, pull requests, and notifications",
+  "rootDescription": "Browse GitHub",
+  "prefixes": ["github"],
+  "globalSearch": true,
+  "requires": ["gh", "python3", "xdg-open", "wl-copy"],
+  "command": ["{extensionDir}/bin/omalaunch-github", "root"]
+}

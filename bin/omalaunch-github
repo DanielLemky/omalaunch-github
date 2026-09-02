@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Read GitHub state through gh and emit bounded Omalaunch menu documents."""
+
+import json
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from urllib.parse import urlparse
+
+LIMIT = 24
+TIMEOUT = 4
+SELF = os.path.realpath(__file__)
+
+
+def fail(message):
+    print(f"omalaunch-github: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def gh(endpoint, fields=None, method="GET"):
+    command = ["gh", "api", "--method", method, endpoint]
+    for key, value in (fields or {}).items():
+        command += ["-f", f"{key}={value}"]
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail(str(error))
+    if result.returncode != 0:
+        fail(result.stderr.strip() or f"gh exited with {result.returncode}")
+    if not result.stdout.strip():
+        return {}
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        fail(f"gh returned invalid JSON: {error}")
+
+
+def api_path(url):
+    parsed = urlparse(str(url or ""))
+    if parsed.netloc and parsed.netloc not in ("api.github.com", "github.com"):
+        fail("unsupported GitHub API host")
+    return parsed.path.lstrip("/") if parsed.netloc else str(url or "").lstrip("/")
+
+
+def compact(value, limit=512):
+    return " ".join(str(value or "").split())[:limit]
+
+
+def date(value):
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return compact(value, 64)
+
+
+def action_open(url):
+    return {"id": "open", "label": "Open on GitHub", "command": ["xdg-open", url], "closeOnSuccess": True}
+
+
+def action_copy(url):
+    return {"id": "copy-url", "label": "Copy URL", "command": ["wl-copy", "--", url]}
+
+
+def repo_name_from_url(url):
+    path = api_path(url).split("/")
+    return "/".join(path[1:3]) if len(path) >= 3 and path[0] == "repos" else ""
+
+
+def repo_row(repo):
+    name = repo.get("full_name", "")
+    return {
+        "id": f"repo:{name}", "label": name,
+        "description": compact(repo.get("description") or "Repository"),
+        "aliases": [repo.get("language") or "", "repository", "repo"],
+        "context": {"repository": name},
+        "submenu": {"command": [SELF, "repository", name]},
+    }
+
+
+def issue_row(item, kind=None):
+    is_pr = bool(item.get("pull_request")) if kind is None else kind == "pr"
+    repo = repo_name_from_url(item.get("repository_url")) or item.get("repository", {}).get("full_name", "")
+    number = str(item.get("number", ""))
+    label = compact(item.get("title"), 256)
+    prefix = "pr" if is_pr else "issue"
+    return {
+        "id": f"{prefix}:{repo}#{number}", "label": label,
+        "description": f"{repo} #{number} · {compact(item.get('user', {}).get('login'))}",
+        "aliases": [repo, f"#{number}", "pull request" if is_pr else "issue"],
+        "context": {"repository": repo, "number": number},
+        "document": {"command": [SELF, f"{prefix}-document", repo, number]},
+    }
+
+
+def notification_row(item):
+    subject = item.get("subject") or {}
+    repo = (item.get("repository") or {}).get("full_name", "")
+    thread = str(item.get("id", ""))
+    return {
+        "id": f"notification:{thread}", "label": compact(subject.get("title"), 256),
+        "description": f"{repo} · {compact(item.get('reason'))} · {compact(subject.get('type'))}",
+        "aliases": [repo, item.get("reason") or "", subject.get("type") or "", "notification"],
+        "context": {"thread": thread},
+        "document": {"command": [SELF, "notification-document", thread]},
+    }
+
+
+def repositories(limit=LIMIT):
+    data = gh("user/repos", {"affiliation": "owner,collaborator,organization_member", "sort": "updated", "direction": "desc", "per_page": str(limit)})
+    return [repo_row(item) for item in data if not item.get("archived")][:limit]
+
+
+def search_rows(kind, limit=LIMIT, repository=""):
+    qualifier = "is:pr" if kind == "pr" else "is:issue"
+    query = f"{qualifier} is:open " + (f"repo:{repository}" if repository else "involves:@me archived:false")
+    data = gh("search/issues", {"q": query, "sort": "updated", "order": "desc", "per_page": str(limit)})
+    return [issue_row(item, kind) for item in data.get("items", [])][:limit]
+
+
+def notifications(limit=LIMIT, repository=""):
+    endpoint = f"repos/{repository}/notifications" if repository else "notifications"
+    data = gh(endpoint, {"all": "false", "participating": "false", "per_page": str(limit)})
+    return [notification_row(item) for item in data][:limit]
+
+
+def category(identifier, label, command):
+    return {"id": identifier, "label": label, "globalSearch": False, "submenu": {"command": [SELF] + command}}
+
+
+def root_menu():
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = [pool.submit(repositories), pool.submit(search_rows, "issue"),
+                pool.submit(search_rows, "pr"), pool.submit(notifications)]
+        groups = [job.result() for job in jobs]
+    rows = [
+        category("repositories", "Repositories", ["repositories"]),
+        category("issues", "Issues", ["issues"]),
+        category("pull-requests", "Pull Requests", ["pull-requests"]),
+        category("notifications", "Notifications", ["notifications"]),
+    ]
+    for group in groups:
+        rows.extend(group)
+    return rows[:100]
+
+
+def repository_menu(name):
+    encoded = name
+    url = f"https://github.com/{name}"
+    return [
+        {"id": "overview", "label": "Overview", "document": {"command": [SELF, "repo-document", name]}},
+        category("issues", "Issues", ["repo-issues", encoded]),
+        category("pull-requests", "Pull Requests", ["repo-pull-requests", encoded]),
+        category("notifications", "Notifications", ["repo-notifications", encoded]),
+        {"id": "open", "label": "Open on GitHub", "command": ["xdg-open", url], "closeOnSuccess": True},
+        {"id": "copy-url", "label": "Copy URL", "command": ["wl-copy", "--", url]},
+    ]
+
+
+def emit(value):
+    json.dump(value, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+    sys.stdout.write("\n")
+
+
+def repo_document(name):
+    item = gh(f"repos/{name}")
+    url = item.get("html_url") or f"https://github.com/{name}"
+    emit({
+        "title": item.get("full_name") or name, "subtitle": compact(item.get("description")),
+        "status": "Archived" if item.get("archived") else ("Private" if item.get("private") else "Public"),
+        "fields": [
+            {"label": "Owner", "value": compact(item.get("owner", {}).get("login"))},
+            {"label": "Language", "value": compact(item.get("language")) or "—"},
+            {"label": "Default branch", "value": compact(item.get("default_branch"))},
+            {"label": "Stars", "value": str(item.get("stargazers_count", 0))},
+            {"label": "Forks", "value": str(item.get("forks_count", 0))},
+            {"label": "Open issues", "value": str(item.get("open_issues_count", 0))},
+            {"label": "Updated", "value": date(item.get("updated_at"))},
+        ],
+        "sections": [], "actions": [action_open(url), action_copy(url)],
+    })
+
+
+def issue_document(repo, number):
+    item = gh(f"repos/{repo}/issues/{number}")
+    url = item.get("html_url", "")
+    labels = ", ".join(label.get("name", "") for label in item.get("labels", [])) or "—"
+    assignees = ", ".join(user.get("login", "") for user in item.get("assignees", [])) or "—"
+    emit({
+        "title": item.get("title") or f"Issue #{number}", "subtitle": f"{repo} #{number}",
+        "status": compact(item.get("state"), 64).title(),
+        "fields": [
+            {"label": "Author", "value": compact(item.get("user", {}).get("login"))},
+            {"label": "Assignees", "value": assignees}, {"label": "Labels", "value": labels},
+            {"label": "Comments", "value": str(item.get("comments", 0))},
+            {"label": "Created", "value": date(item.get("created_at"))},
+            {"label": "Updated", "value": date(item.get("updated_at"))},
+        ],
+        "sections": [{"heading": "Description", "text": (item.get("body") or "No description.")[:32768]}],
+        "actions": [action_open(url), action_copy(url)],
+    })
+
+
+def pr_document(repo, number):
+    item = gh(f"repos/{repo}/pulls/{number}")
+    status = {}
+    if item.get("statuses_url"):
+        try:
+            status = gh(api_path(item["statuses_url"]))
+        except SystemExit:
+            status = {}
+    url = item.get("html_url", "")
+    reviewers = ", ".join(user.get("login", "") for user in item.get("requested_reviewers", [])) or "—"
+    state = "Draft" if item.get("draft") else ("Merged" if item.get("merged") else compact(item.get("state")).title())
+    emit({
+        "title": item.get("title") or f"Pull request #{number}", "subtitle": f"{repo} #{number}", "status": state,
+        "fields": [
+            {"label": "Author", "value": compact(item.get("user", {}).get("login"))},
+            {"label": "Reviewers", "value": reviewers},
+            {"label": "Checks", "value": compact(status.get("state"), 64).title() or "Unknown"},
+            {"label": "Branches", "value": f"{compact(item.get('head', {}).get('ref'))} → {compact(item.get('base', {}).get('ref'))}"},
+            {"label": "Changes", "value": f"+{item.get('additions', 0)} −{item.get('deletions', 0)} in {item.get('changed_files', 0)} files"},
+            {"label": "Mergeable", "value": str(item.get("mergeable", "unknown")).title()},
+            {"label": "Created", "value": date(item.get("created_at"))},
+            {"label": "Updated", "value": date(item.get("updated_at"))},
+        ],
+        "sections": [{"heading": "Description", "text": (item.get("body") or "No description.")[:32768]}],
+        "actions": [action_open(url), action_copy(url)],
+    })
+
+
+def notification_document(thread):
+    item = gh(f"notifications/threads/{thread}")
+    subject = item.get("subject") or {}
+    related = {}
+    if subject.get("url"):
+        related = gh(api_path(subject["url"]))
+    repo = (item.get("repository") or {}).get("full_name", "")
+    url = related.get("html_url") or (item.get("repository") or {}).get("html_url") or f"https://github.com/{repo}"
+    actions = [action_open(url), action_copy(url), {
+        "id": "mark-read", "label": "Mark as read", "command": [SELF, "mark-read", thread]
+    }]
+    emit({
+        "title": subject.get("title") or "GitHub notification", "subtitle": repo,
+        "status": "Unread" if item.get("unread", True) else "Read",
+        "fields": [
+            {"label": "Reason", "value": compact(item.get("reason")).replace("_", " ").title()},
+            {"label": "Type", "value": compact(subject.get("type"))},
+            {"label": "Author", "value": compact(related.get("user", {}).get("login")) or "—"},
+            {"label": "Updated", "value": date(item.get("updated_at"))},
+        ],
+        "sections": [{"heading": "Description", "text": (related.get("body") or "No description is available.")[:32768]}],
+        "actions": actions,
+    })
+
+
+def main():
+    args = sys.argv[1:]
+    command = args[0] if args else "menu"
+    if command in ("menu", "root"): emit(root_menu())
+    elif command == "repositories": emit(repositories(80))
+    elif command == "issues": emit(search_rows("issue", 80))
+    elif command == "pull-requests": emit(search_rows("pr", 80))
+    elif command == "notifications": emit(notifications(80))
+    elif command == "repository" and len(args) == 2: emit(repository_menu(args[1]))
+    elif command == "repo-issues" and len(args) == 2: emit(search_rows("issue", 80, args[1]))
+    elif command == "repo-pull-requests" and len(args) == 2: emit(search_rows("pr", 80, args[1]))
+    elif command == "repo-notifications" and len(args) == 2: emit(notifications(80, args[1]))
+    elif command == "repo-document" and len(args) == 2: repo_document(args[1])
+    elif command == "issue-document" and len(args) == 3: issue_document(args[1], args[2])
+    elif command == "pr-document" and len(args) == 3: pr_document(args[1], args[2])
+    elif command == "notification-document" and len(args) == 2: notification_document(args[1])
+    elif command == "mark-read" and len(args) == 2: gh(f"notifications/threads/{args[1]}", method="PATCH")
+    else: fail("invalid command")
+
+
+if __name__ == "__main__":
+    main()

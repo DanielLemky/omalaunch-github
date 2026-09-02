@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "quantumfire.omalaunch-github",
+  "name": "Omalaunch: GitHub",
+  "version": "1.0.0",
+  "author": "Daniel Lemky",
+  "description": "Browse GitHub repositories, work, and notifications in Omalaunch",
+  "kinds": ["extension"],
+  "entryPoints": {},
+  "omalaunch": {
+    "extensions": ["omalaunch.json"]
+  }
+}
