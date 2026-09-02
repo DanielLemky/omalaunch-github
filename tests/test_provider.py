@@ -83,7 +83,7 @@ class ProviderTest(unittest.TestCase):
                          ["overview", "issues", "pull-requests", "notifications"])
         self.assertIn("document", rows[0])
         self.assertTrue(all("submenu" in row for row in rows[1:4]))
-        self.assertEqual([row["trailingIcon"] for row in rows[1:4]], ["4", "2", "1"])
+        self.assertEqual([row["badge"] for row in rows[1:4]], ["4", "2", "1"])
         document = self.run_provider("repo-document", "acme/widgets")
         self.assertEqual(document["title"], "acme/widgets")
         self.assertEqual(len(document["actions"]), 2)

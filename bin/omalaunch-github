@@ -172,11 +172,11 @@ def repository_menu(name):
     url = f"https://github.com/{name}"
     issue_count, pull_count, notification_count = repository_counts(name)
     issues = category("issues", "Issues", ["repo-issues", encoded])
-    issues["trailingIcon"] = str(issue_count)
+    issues["badge"] = str(issue_count)
     pulls = category("pull-requests", "Pull Requests", ["repo-pull-requests", encoded])
-    pulls["trailingIcon"] = str(pull_count)
+    pulls["badge"] = str(pull_count)
     repo_notifications = category("notifications", "Notifications", ["repo-notifications", encoded])
-    repo_notifications["trailingIcon"] = "100+" if notification_count >= 100 else str(notification_count)
+    repo_notifications["badge"] = "100+" if notification_count >= 100 else str(notification_count)
     return [
         {"id": "overview", "label": "Overview", "document": {"command": [SELF, "repo-document", name]}},
         issues,
