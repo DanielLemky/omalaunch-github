@@ -136,15 +136,16 @@ def root_menu():
         jobs = [pool.submit(repositories), pool.submit(search_rows, "issue"),
                 pool.submit(search_rows, "pr"), pool.submit(notifications)]
         groups = [job.result() for job in jobs]
-    rows = [
+    items = [
         category("repositories", "Repositories", ["repositories"]),
         category("issues", "Issues", ["issues"]),
         category("pull-requests", "Pull Requests", ["pull-requests"]),
         category("notifications", "Notifications", ["notifications"]),
     ]
+    global_search_items = []
     for group in groups:
-        rows.extend(group)
-    return rows[:100]
+        global_search_items.extend(group)
+    return {"items": items, "globalSearchItems": global_search_items[:100]}
 
 
 def repository_menu(name):

@@ -64,16 +64,18 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
 
-    def test_root_has_categories_and_global_rows(self):
-        rows = self.run_provider("root")
-        self.assertLessEqual(len(rows), 100)
-        self.assertEqual([row["label"] for row in rows[:4]],
+    def test_root_separates_menu_and_global_search_rows(self):
+        response = self.run_provider("root")
+        rows = response["items"]
+        search_rows = response["globalSearchItems"]
+        self.assertEqual([row["label"] for row in rows],
                          ["Repositories", "Issues", "Pull Requests", "Notifications"])
-        self.assertTrue(all(row["globalSearch"] is False for row in rows[:4]))
-        self.assertTrue(any(row["id"].startswith("repo:") and "submenu" in row for row in rows))
-        self.assertTrue(any(row["id"].startswith("issue:") and "document" in row for row in rows))
-        self.assertTrue(any(row["id"].startswith("pr:") and "document" in row for row in rows))
-        self.assertTrue(any(row["id"].startswith("notification:") for row in rows))
+        self.assertTrue(all(row["globalSearch"] is False for row in rows))
+        self.assertLessEqual(len(search_rows), 100)
+        self.assertTrue(any(row["id"].startswith("repo:") and "submenu" in row for row in search_rows))
+        self.assertTrue(any(row["id"].startswith("issue:") and "document" in row for row in search_rows))
+        self.assertTrue(any(row["id"].startswith("pr:") and "document" in row for row in search_rows))
+        self.assertTrue(any(row["id"].startswith("notification:") for row in search_rows))
 
     def test_repository_drills_into_lists_and_overview(self):
         rows = self.run_provider("repository", "acme/widgets")
