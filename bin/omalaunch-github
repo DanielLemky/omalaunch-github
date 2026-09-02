@@ -132,20 +132,23 @@ def category(identifier, label, command):
 
 
 def root_menu():
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        jobs = [pool.submit(repositories), pool.submit(search_rows, "issue"),
-                pool.submit(search_rows, "pr"), pool.submit(notifications)]
-        groups = [job.result() for job in jobs]
-    items = [
+    return [
         category("repositories", "Repositories", ["repositories"]),
         category("issues", "Issues", ["issues"]),
         category("pull-requests", "Pull Requests", ["pull-requests"]),
         category("notifications", "Notifications", ["notifications"]),
     ]
-    global_search_items = []
+
+
+def global_search_menu():
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = [pool.submit(repositories), pool.submit(search_rows, "issue"),
+                pool.submit(search_rows, "pr"), pool.submit(notifications)]
+        groups = [job.result() for job in jobs]
+    rows = []
     for group in groups:
-        global_search_items.extend(group)
-    return {"items": items, "globalSearchItems": global_search_items[:100]}
+        rows.extend(group)
+    return rows[:100]
 
 
 def repository_menu(name):
@@ -262,6 +265,7 @@ def main():
     args = sys.argv[1:]
     command = args[0] if args else "menu"
     if command in ("menu", "root"): emit(root_menu())
+    elif command == "global-search": emit(global_search_menu())
     elif command == "repositories": emit(repositories(80))
     elif command == "issues": emit(search_rows("issue", 80))
     elif command == "pull-requests": emit(search_rows("pr", 80))

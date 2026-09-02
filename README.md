@@ -28,7 +28,7 @@ Omalaunch reads `manifest.json` and loads `omalaunch.json`. Refresh Omalaunch af
 
 ## Provider interface
 
-`bin/omalaunch-github root` returns separate `items` and `globalSearchItems` collections. The menu contains only the four GitHub categories, while recent GitHub records remain available to global search. Other provider commands are internal targets for host-rendered submenus, documents, and the mark-read action.
+`bin/omalaunch-github root` returns the four static GitHub categories without a network request. Omalaunch runs `bin/omalaunch-github global-search` independently to load recent GitHub records for global search. Other provider commands are internal targets for host-rendered submenus, documents, and the mark-read action.
 
 All `gh` calls use direct subprocess argument arrays, a request timeout, and no shell. Errors go to stderr and return a nonzero status. Each menu response has at most 100 rows.
 

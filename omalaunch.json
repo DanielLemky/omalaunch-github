@@ -9,6 +9,7 @@
   "rootDescription": "Browse GitHub",
   "prefixes": ["github"],
   "globalSearch": true,
+  "globalSearchCommand": ["{extensionDir}/bin/omalaunch-github", "global-search"],
   "requires": ["gh", "python3", "xdg-open", "wl-copy"],
   "command": ["{extensionDir}/bin/omalaunch-github", "root"]
 }

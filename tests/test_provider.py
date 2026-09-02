@@ -64,13 +64,12 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
 
-    def test_root_separates_menu_and_global_search_rows(self):
-        response = self.run_provider("root")
-        rows = response["items"]
-        search_rows = response["globalSearchItems"]
+    def test_root_is_static_and_global_search_loads_separately(self):
+        rows = self.run_provider("root")
         self.assertEqual([row["label"] for row in rows],
                          ["Repositories", "Issues", "Pull Requests", "Notifications"])
         self.assertTrue(all(row["globalSearch"] is False for row in rows))
+        search_rows = self.run_provider("global-search")
         self.assertLessEqual(len(search_rows), 100)
         self.assertTrue(any(row["id"].startswith("repo:") and "submenu" in row for row in search_rows))
         self.assertTrue(any(row["id"].startswith("issue:") and "document" in row for row in search_rows))
