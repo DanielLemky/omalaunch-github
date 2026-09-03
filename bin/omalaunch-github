@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,55 @@ from urllib.parse import urlparse
 LIMIT = 24
 TIMEOUT = 4
 SELF = os.path.realpath(__file__)
+STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+                          "omarchy", "omalaunch", "extensions", "quantumfire.github.json")
+STAR_KEY = re.compile(r"^(?:general:(?:repositories|issues|pull-requests|notifications)|repo:[^:]+/[^:]+:(?:overview|issues|pull-requests|notifications|actions))$")
+
+
+def load_stars():
+    try:
+        with open(STATE_PATH, encoding="utf-8") as state_file:
+            value = json.load(state_file)
+        stars = value.get("stars", []) if isinstance(value, dict) else []
+        return {item for item in stars if isinstance(item, str) and STAR_KEY.fullmatch(item)}
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+
+def save_stars(stars):
+    directory = os.path.dirname(STATE_PATH)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    temporary = STATE_PATH + f".tmp.{os.getpid()}"
+    with open(temporary, "w", encoding="utf-8") as state_file:
+        json.dump({"version": 1, "stars": sorted(stars)}, state_file, separators=(",", ":"))
+        state_file.write("\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, STATE_PATH)
+
+
+def set_star(key, enabled):
+    if not STAR_KEY.fullmatch(key) or enabled not in ("true", "false"):
+        fail("invalid star request")
+    stars = load_stars()
+    if enabled == "true":
+        stars.add(key)
+    else:
+        stars.discard(key)
+    save_stars(stars)
+
+
+def starrable(row, key, starred_label):
+    starred = key in load_stars()
+    row = dict(row)
+    row["id"] = key
+    row["starred"] = starred
+    row["starredLabel"] = starred_label
+    row["starAction"] = "star"
+    row["actions"] = list(row.get("actions", [])) + [{
+        "id": "star", "label": "Remove from top level" if starred else "Add to top level",
+        "command": [SELF, "set-star", key, "false" if starred else "true"]
+    }]
+    return row
 
 
 def fail(message):
@@ -192,12 +242,14 @@ def category(identifier, label, command, icon=""):
 
 
 def root_menu():
-    return [
-        category("repositories", "Repositories", ["repositories"], "󰊢"),
-        category("issues", "Issues", ["issues"], "󰅚"),
-        category("pull-requests", "Pull Requests", ["pull-requests"], "󰘬"),
-        category("notifications", "Notifications", ["notifications"], "󰂚"),
+    definitions = [
+        ("repositories", "Repositories", ["repositories"], "󰊢"),
+        ("issues", "Issues", ["issues"], "󰅚"),
+        ("pull-requests", "Pull Requests", ["pull-requests"], "󰘬"),
+        ("notifications", "Notifications", ["notifications"], "󰂚"),
     ]
+    return [starrable(category(identifier, label, command, icon), f"general:{identifier}",
+                      f"GitHub · {label}") for identifier, label, command, icon in definitions]
 
 
 def global_search_menu():
@@ -205,7 +257,7 @@ def global_search_menu():
         jobs = [pool.submit(repositories), pool.submit(search_rows, "issue"),
                 pool.submit(search_rows, "pr"), pool.submit(notifications)]
         groups = [job.result() for job in jobs]
-    rows = []
+    rows = starred_shortcuts()
     for group in groups:
         rows.extend(group)
     return rows[:100]
@@ -227,23 +279,49 @@ def repository_counts(name):
         return issue_job.result(), pull_job.result(), len(notification_job.result())
 
 
+def repository_shortcut(name, section):
+    definitions = {
+        "overview": ("Overview", "󰋜", {"document": {"command": [SELF, "repo-document", name]}}),
+        "issues": ("Issues", "󰅚", {"submenu": {"command": [SELF, "repo-issues", name]}}),
+        "pull-requests": ("Pull Requests", "󰘬", {"submenu": {"command": [SELF, "repo-pull-requests", name]}}),
+        "notifications": ("Notifications", "󰂚", {"submenu": {"command": [SELF, "repo-notifications", name]}}),
+        "actions": ("Actions", "󰑮", {"submenu": {"command": [SELF, "repo-actions", name]}}),
+    }
+    label, icon, behavior = definitions[section]
+    row = {"id": section, "label": label, "icon": icon, "globalSearch": False}
+    row.update(behavior)
+    return starrable(row, f"repo:{name}:{section}", f"{name} · {label}")
+
+
+def starred_shortcuts():
+    rows = []
+    for row in root_menu():
+        if row["starred"]:
+            row["globalSearch"] = True
+            rows.append(row)
+    for key in sorted(load_stars()):
+        if not key.startswith("repo:"):
+            continue
+        repository, section = key[5:].rsplit(":", 1)
+        row = repository_shortcut(repository, section)
+        row["globalSearch"] = True
+        rows.append(row)
+    return rows
+
+
 def repository_menu(name):
-    encoded = name
     url = f"https://github.com/{name}"
     issue_count, pull_count, notification_count = repository_counts(name)
-    issues = category("issues", "Issues", ["repo-issues", encoded], "󰅚")
+    overview = repository_shortcut(name, "overview")
+    issues = repository_shortcut(name, "issues")
     issues["badge"] = str(issue_count)
-    pulls = category("pull-requests", "Pull Requests", ["repo-pull-requests", encoded], "󰘬")
+    pulls = repository_shortcut(name, "pull-requests")
     pulls["badge"] = str(pull_count)
-    repo_notifications = category("notifications", "Notifications", ["repo-notifications", encoded], "󰂚")
+    repo_notifications = repository_shortcut(name, "notifications")
     repo_notifications["badge"] = "100+" if notification_count >= 100 else str(notification_count)
-    actions = category("actions", "Actions", ["repo-actions", encoded], "󰑮")
+    actions = repository_shortcut(name, "actions")
     return [
-        {"id": "overview", "label": "Overview", "icon": "󰋜", "document": {"command": [SELF, "repo-document", name]}},
-        issues,
-        pulls,
-        repo_notifications,
-        actions,
+        overview, issues, pulls, repo_notifications, actions,
         {"id": "open", "label": "Open on GitHub", "icon": "󰖟", "command": ["xdg-open", url], "closeOnSuccess": True},
         {"id": "copy-url", "label": "Copy URL", "icon": "󰆏", "command": ["wl-copy", "--", url]},
     ]
@@ -443,6 +521,7 @@ def main():
     elif command == "pr-document" and len(args) == 3: pr_document(args[1], args[2])
     elif command == "notification-document" and len(args) == 2: notification_document(args[1])
     elif command == "mark-read" and len(args) == 2: gh(f"notifications/threads/{args[1]}", method="PATCH")
+    elif command == "set-star" and len(args) == 3: set_star(args[1], args[2])
     else: fail("invalid command")
 
 

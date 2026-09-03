@@ -59,6 +59,7 @@ class ProviderTest(unittest.TestCase):
         self.env = os.environ.copy()
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env["PATH"]
         self.env["GH_LOG"] = str(self.log)
+        self.env["XDG_STATE_HOME"] = str(self.bin / "state")
 
     def tearDown(self):
         self.temp.cleanup()
@@ -74,6 +75,7 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual([row["label"] for row in rows],
                          ["Repositories", "Issues", "Pull Requests", "Notifications"])
         self.assertTrue(all(row["globalSearch"] is False for row in rows))
+        self.assertTrue(all(row["starAction"] == "star" for row in rows))
         search_rows = self.run_provider("global-search")
         self.assertLessEqual(len(search_rows), 100)
         self.assertTrue(any(row["id"].startswith("repo:") and "submenu" in row for row in search_rows))
@@ -84,9 +86,10 @@ class ProviderTest(unittest.TestCase):
 
     def test_repository_drills_into_lists_and_overview(self):
         rows = self.run_provider("repository", "acme/widgets")
-        self.assertEqual([row["id"] for row in rows[:5]],
-                         ["overview", "issues", "pull-requests", "notifications", "actions"])
+        self.assertEqual([row["label"] for row in rows[:5]],
+                         ["Overview", "Issues", "Pull Requests", "Notifications", "Actions"])
         self.assertTrue(all(row.get("icon") for row in rows))
+        self.assertTrue(all(row.get("starredLabel", "").startswith("acme/widgets · ") for row in rows[:5]))
         self.assertIn("document", rows[0])
         self.assertTrue(all("submenu" in row for row in rows[1:5]))
         self.assertEqual([row["badge"] for row in rows[1:4]], ["4", "2", "1"])
@@ -125,6 +128,20 @@ class ProviderTest(unittest.TestCase):
                                 text=True, capture_output=True, timeout=8)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported GitHub API host", result.stderr)
+
+    def test_general_and_repository_shortcuts_publish_distinct_starred_labels(self):
+        self.run_provider("set-star", "general:issues", "true")
+        self.run_provider("set-star", "repo:acme/widgets:actions", "true")
+        root = self.run_provider("root")
+        issues = next(row for row in root if row["label"] == "Issues")
+        self.assertTrue(issues["starred"])
+        search = self.run_provider("global-search")
+        labels = [row["starredLabel"] for row in search if row.get("starred")]
+        self.assertIn("GitHub · Issues", labels)
+        self.assertIn("acme/widgets · Actions", labels)
+        repo = self.run_provider("repository", "acme/widgets")
+        actions = next(row for row in repo if row["label"] == "Actions")
+        self.assertTrue(actions["starred"])
 
     def test_action_runs_show_semantic_status_and_job_details(self):
         rows = self.run_provider("repo-actions", "acme/widgets")
