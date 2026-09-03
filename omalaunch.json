@@ -10,6 +10,6 @@
   "prefixes": ["github"],
   "globalSearch": true,
   "globalSearchCommand": ["{extensionDir}/bin/omalaunch-github", "global-search"],
-  "requires": ["gh", "python3", "xdg-open", "wl-copy"],
+  "requires": ["gh", "python3", "xdg-open", "wl-copy", "omarchy-agent", "omarchy-launch-editor"],
   "command": ["{extensionDir}/bin/omalaunch-github", "root"]
 }

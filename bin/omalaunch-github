@@ -466,8 +466,25 @@ def root_menu():
         ("pull-requests", "Pull Requests", ["pull-requests"], "󰘬"),
         ("notifications", "Notifications", ["notifications"], "󰂚"),
     ]
-    return [starrable(category(identifier, label, command, icon), f"general:{identifier}",
+    rows = [starrable(category(identifier, label, command, icon), f"general:{identifier}",
                       f"GitHub · {label}") for identifier, label, command, icon in definitions]
+    rows.append(category("configuration", "Configuration", ["configuration"], "󰒓"))
+    return rows
+
+
+def configuration_menu():
+    example_path = os.path.abspath(os.path.join(os.path.dirname(SELF), "..", "config.example.jsonc"))
+    prompt = (
+        f"Edit the Omalaunch GitHub plugin configuration at {CONFIG_PATH}. "
+        f"Use {example_path} as the schema example. Create the configuration file if it is missing. "
+        "Preserve JSONC syntax, use version 1, and change only the settings requested by the user."
+    )
+    return [
+        {"id": "open-config", "label": "Open config file", "icon": "󰈙",
+         "command": ["omarchy-launch-editor", CONFIG_PATH], "closeOnSuccess": True},
+        {"id": "edit-config-agent", "label": "Edit with agent", "icon": "󰚩",
+         "command": ["omarchy-agent", "--prompt", prompt], "closeOnSuccess": True},
+    ]
 
 
 def override_visible(key, repository, settings, excluded, default):
@@ -570,7 +587,7 @@ def repository_shortcut(name, section):
 def starred_shortcuts():
     rows = []
     for row in root_menu():
-        if row["starred"]:
+        if row.get("starred", False):
             row["globalSearch"] = True
             rows.append(row)
     for key in sorted(load_stars()):
@@ -782,6 +799,7 @@ def main():
         args = args[:-1]
     command = args[0] if args else "menu"
     if command in ("menu", "root"): emit(root_menu())
+    elif command == "configuration": emit(configuration_menu())
     elif command == "global-search": emit(global_search_menu())
     elif command == "repositories": emit(repositories(80, force))
     elif command == "issues": emit(search_rows("issue", 80, "", force))

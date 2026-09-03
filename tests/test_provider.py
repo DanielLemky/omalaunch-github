@@ -84,9 +84,10 @@ class ProviderTest(unittest.TestCase):
     def test_root_is_static_and_global_search_loads_separately(self):
         rows = self.run_provider("root")
         self.assertEqual([row["label"] for row in rows],
-                         ["Repositories", "Issues", "Pull Requests", "Notifications"])
+                         ["Repositories", "Issues", "Pull Requests", "Notifications", "Configuration"])
         self.assertTrue(all(row["globalSearch"] is False for row in rows))
-        self.assertTrue(all(row["starAction"] == "star" for row in rows))
+        self.assertTrue(all(row["starAction"] == "star" for row in rows[:4]))
+        self.assertNotIn("starAction", rows[4])
         self.assertTrue(all(row["submenu"]["refreshCommand"][-1] == "--refresh" for row in rows))
         search_rows = self.run_provider("global-search")
         self.assertLessEqual(len(search_rows), 100)
@@ -95,6 +96,16 @@ class ProviderTest(unittest.TestCase):
         self.assertFalse(any(row["id"].startswith("pr:") for row in search_rows))
         self.assertFalse(any(row["id"].startswith("notification:") for row in search_rows))
         self.assertTrue(all(row.get("trailingText") for row in search_rows))
+
+    def test_configuration_menu_opens_editor_or_default_agent(self):
+        rows = self.run_provider("configuration")
+        self.assertEqual([row["label"] for row in rows], ["Open config file", "Edit with agent"])
+        config_path = str(Path(self.env["HOME"]) / ".config/omarchy/omalaunch/extensions/quantumfire.github.jsonc")
+        self.assertEqual(rows[0]["command"], ["omarchy-launch-editor", config_path])
+        self.assertEqual(rows[1]["command"][:2], ["omarchy-agent", "--prompt"])
+        self.assertIn(config_path, rows[1]["command"][2])
+        self.assertIn("config.example.jsonc", rows[1]["command"][2])
+        self.assertTrue(all(row["closeOnSuccess"] for row in rows))
 
     def test_repository_drills_into_lists_and_overview(self):
         rows = self.run_provider("repository", "acme/widgets")

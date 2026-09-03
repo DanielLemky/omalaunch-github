@@ -2,7 +2,7 @@
 
 An external [Omalaunch](https://github.com/daniel-lemky/omalaunch) menu extension for GitHub.
 
-It shows recent repositories, open issues and pull requests related to you, and unread notifications in global search. Repository, issue, pull request, and notification lists include their latest update date. On-demand submenus and structured documents keep the root response small. Repository menus show open issue, open pull request, and unread notification counts. Their Actions submenu shows recent workflow runs with semantic status badges and job details. Repository documents show project data. Issue, pull request, and notification documents show metadata, safe host-rendered Markdown body text, copyable code blocks, and Open and Copy URL actions. Pull request details also show individual check runs and their combined result.
+It shows recent owned repositories in global search by default. Issues, pull requests, and notifications remain available in the GitHub menu and can be enabled through configuration. Repository, issue, pull request, and notification lists include their latest update date. On-demand submenus and structured documents keep the root response small. Repository menus show open issue, open pull request, and unread notification counts. Their Actions submenu shows recent workflow runs with semantic status badges and job details. Repository documents show project data. Issue, pull request, and notification documents show metadata, safe host-rendered Markdown body text, copyable code blocks, and Open and Copy URL actions. Pull request details also show individual check runs and their combined result.
 
 The provider is read-only except for the explicit **Mark as read** notification action and its local shortcut-star state. Press Ctrl+S on general or repository menu items to add or remove top-level Omalaunch shortcuts. Repository shortcuts include the repository name, such as `acme/widgets · Actions`.
 
@@ -13,6 +13,8 @@ The provider is read-only except for the explicit **Mark as read** notification 
 - [GitHub CLI](https://cli.github.com/) authenticated for `github.com`: `gh auth login`
 - `xdg-open`
 - `wl-copy`
+- `omarchy-launch-editor`
+- `omarchy-agent`
 
 GitHub Enterprise Server is not supported in version 1.
 
@@ -33,6 +35,8 @@ The optional configuration file is:
 ```text
 ~/.config/omarchy/omalaunch/extensions/quantumfire.github.jsonc
 ```
+
+The GitHub root menu includes **Configuration**. **Open config file** opens this path with the default Omarchy editor. **Edit with agent** starts the default Omarchy coding agent with the path and schema example in its prompt.
 
 JSONC comments and trailing commas are accepted. See [`config.example.jsonc`](config.example.jsonc) for the complete version-1 structure. By default, global search contains at most ten recently updated repositories owned by the authenticated user. Issues, pull requests, and notifications remain available in their GitHub menus but are excluded from global search.
 
