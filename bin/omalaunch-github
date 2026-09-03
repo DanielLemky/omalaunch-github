@@ -87,6 +87,21 @@ def action_copy(url):
     return {"id": "copy-url", "label": "Copy URL", "command": ["wl-copy", "--", url]}
 
 
+def status_presentation(status, conclusion=""):
+    value = compact(conclusion or status, 64).lower()
+    if value == "success":
+        return "Success", "success", "✓"
+    if value in ("failure", "timed_out", "startup_failure", "stale"):
+        return "Failure", "danger", "✕"
+    if value in ("queued", "in_progress", "pending", "requested", "waiting"):
+        return "Pending", "warning", "●"
+    if value == "cancelled":
+        return "Cancelled", "neutral", "−"
+    if value in ("skipped", "neutral"):
+        return "Skipped", "neutral", "−"
+    return "Unknown", "neutral", "?"
+
+
 def repo_name_from_url(url):
     path = api_path(url).split("/")
     return "/".join(path[1:3]) if len(path) >= 3 and path[0] == "repos" else ""
@@ -152,6 +167,25 @@ def notifications(limit=LIMIT, repository=""):
     return [notification_row(item) for item in data][:limit]
 
 
+def action_runs(repository, limit=80):
+    data = gh(f"repos/{repository}/actions/runs", {"per_page": str(min(limit, 100))})
+    rows = []
+    for run in data.get("workflow_runs", [])[:limit]:
+        run_id = str(run.get("id", ""))
+        label, tone, _ = status_presentation(run.get("status"), run.get("conclusion"))
+        title = compact(run.get("name") or run.get("display_title") or f"Run {run_id}", 256)
+        branch = compact(run.get("head_branch"), 128)
+        event = compact(run.get("event"), 64).replace("_", " ")
+        rows.append({
+            "id": f"action-run:{run_id}", "label": title, "icon": "󰑮",
+            "description": " · ".join(value for value in (branch, event) if value),
+            "trailingText": list_date(run.get("updated_at") or run.get("created_at")),
+            "badge": label, "badgeTone": tone,
+            "document": {"command": [SELF, "action-run-document", repository, run_id]},
+        })
+    return rows
+
+
 def category(identifier, label, command, icon=""):
     return {"id": identifier, "label": label, "icon": icon, "globalSearch": False,
             "submenu": {"command": [SELF] + command}}
@@ -203,11 +237,13 @@ def repository_menu(name):
     pulls["badge"] = str(pull_count)
     repo_notifications = category("notifications", "Notifications", ["repo-notifications", encoded], "󰂚")
     repo_notifications["badge"] = "100+" if notification_count >= 100 else str(notification_count)
+    actions = category("actions", "Actions", ["repo-actions", encoded], "󰑮")
     return [
         {"id": "overview", "label": "Overview", "icon": "󰋜", "document": {"command": [SELF, "repo-document", name]}},
         issues,
         pulls,
         repo_notifications,
+        actions,
         {"id": "open", "label": "Open on GitHub", "icon": "󰖟", "command": ["xdg-open", url], "closeOnSuccess": True},
         {"id": "copy-url", "label": "Copy URL", "icon": "󰆏", "command": ["wl-copy", "--", url]},
     ]
@@ -280,27 +316,49 @@ def combined_status(value):
 def pr_document(repo, number):
     item = gh(f"repos/{repo}/pulls/{number}")
     statuses = []
+    check_runs = []
     if item.get("statuses_url"):
         try:
             statuses = gh(api_path(item["statuses_url"]))
         except SystemExit:
             statuses = []
+    head_sha = item.get("head", {}).get("sha")
+    if head_sha:
+        try:
+            check_runs = gh(f"repos/{repo}/commits/{head_sha}/check-runs", {"per_page": "100"}).get("check_runs", [])
+        except SystemExit:
+            check_runs = []
+    presentations = [status_presentation(run.get("status"), run.get("conclusion")) for run in check_runs]
+    passed = sum(label == "Success" for label, _, _ in presentations)
+    failed = sum(label == "Failure" for label, _, _ in presentations)
+    pending = sum(label == "Pending" for label, _, _ in presentations)
+    check_summary = " · ".join(part for part in (
+        f"{passed} passed" if passed else "", f"{failed} failed" if failed else "",
+        f"{pending} pending" if pending else "") if part) or combined_status(statuses)
+    check_lines = []
+    for run, presentation in zip(check_runs, presentations):
+        label, _, marker = presentation
+        check_lines.append(f"- {marker} {compact(run.get('name') or 'Check', 180)} — {label}")
     url = item.get("html_url", "")
     reviewers = ", ".join(user.get("login", "") for user in item.get("requested_reviewers", [])) or "—"
     state = "Draft" if item.get("draft") else ("Merged" if item.get("merged") else compact(item.get("state")).title())
+    sections = []
+    if check_lines:
+        sections.append({"heading": "Checks", "text": "\n".join(check_lines), "format": "markdown"})
+    sections.append({"heading": "Description", "text": (item.get("body") or "No description.")[:32768], "format": "markdown"})
     emit({
         "title": item.get("title") or f"Pull request #{number}", "subtitle": f"{repo} #{number}", "icon": "󰘬", "status": state,
         "fields": [
             {"label": "Author", "value": compact(item.get("user", {}).get("login"))},
             {"label": "Reviewers", "value": reviewers},
-            {"label": "Checks", "value": combined_status(statuses)},
+            {"label": "Checks", "value": check_summary},
             {"label": "Branches", "value": f"{compact(item.get('head', {}).get('ref'))} → {compact(item.get('base', {}).get('ref'))}"},
             {"label": "Changes", "value": f"+{item.get('additions', 0)} −{item.get('deletions', 0)} in {item.get('changed_files', 0)} files"},
             {"label": "Mergeable", "value": str(item.get("mergeable", "unknown")).title()},
             {"label": "Created", "value": date(item.get("created_at"))},
             {"label": "Updated", "value": date(item.get("updated_at"))},
         ],
-        "sections": [{"heading": "Description", "text": (item.get("body") or "No description.")[:32768], "format": "markdown"}],
+        "sections": sections,
         "actions": [action_open(url), action_copy(url)],
     })
 
@@ -330,6 +388,41 @@ def notification_document(thread):
     })
 
 
+def action_run_document(repo, run_id):
+    run = gh(f"repos/{repo}/actions/runs/{run_id}")
+    jobs = gh(f"repos/{repo}/actions/runs/{run_id}/jobs", {"per_page": "100"}).get("jobs", [])
+    label, _, _ = status_presentation(run.get("status"), run.get("conclusion"))
+    job_lines = []
+    for job in jobs:
+        job_label, _, marker = status_presentation(job.get("status"), job.get("conclusion"))
+        duration = ""
+        if job.get("started_at") and job.get("completed_at"):
+            try:
+                started = datetime.fromisoformat(job["started_at"].replace("Z", "+00:00"))
+                completed = datetime.fromisoformat(job["completed_at"].replace("Z", "+00:00"))
+                duration = f" · {max(0, int((completed - started).total_seconds()))}s"
+            except ValueError:
+                duration = ""
+        job_lines.append(f"- {marker} {compact(job.get('name') or 'Job', 180)} — {job_label}{duration}")
+    url = run.get("html_url") or f"https://github.com/{repo}/actions/runs/{run_id}"
+    actor = run.get("actor") or run.get("triggering_actor") or {}
+    emit({
+        "title": run.get("name") or run.get("display_title") or f"Workflow run {run_id}",
+        "subtitle": f"{repo} · Run #{run.get('run_number', run_id)}", "icon": "󰑮", "status": label,
+        "fields": [
+            {"label": "Branch", "value": compact(run.get("head_branch")) or "—"},
+            {"label": "Commit", "value": compact(run.get("head_sha"), 12) or "—"},
+            {"label": "Event", "value": compact(run.get("event")).replace("_", " ") or "—"},
+            {"label": "Actor", "value": compact(actor.get("login")) or "—"},
+            {"label": "Created", "value": date(run.get("created_at"))},
+            {"label": "Updated", "value": date(run.get("updated_at"))},
+        ],
+        "sections": [{"heading": "Jobs", "text": "\n".join(job_lines) if job_lines else "No jobs are available.",
+                      "format": "markdown"}],
+        "actions": [action_open(url), action_copy(url)],
+    })
+
+
 def main():
     args = sys.argv[1:]
     command = args[0] if args else "menu"
@@ -343,6 +436,8 @@ def main():
     elif command == "repo-issues" and len(args) == 2: emit(search_rows("issue", 80, args[1]))
     elif command == "repo-pull-requests" and len(args) == 2: emit(search_rows("pr", 80, args[1]))
     elif command == "repo-notifications" and len(args) == 2: emit(notifications(80, args[1]))
+    elif command == "repo-actions" and len(args) == 2: emit(action_runs(args[1], 80))
+    elif command == "action-run-document" and len(args) == 3: action_run_document(args[1], args[2])
     elif command == "repo-document" and len(args) == 2: repo_document(args[1])
     elif command == "issue-document" and len(args) == 3: issue_document(args[1], args[2])
     elif command == "pr-document" and len(args) == 3: pr_document(args[1], args[2])

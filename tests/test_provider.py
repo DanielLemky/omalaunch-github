@@ -35,8 +35,12 @@ elif endpoint in ('notifications','repos/acme/widgets/notifications'): out=[noti
 elif endpoint == 'repos/acme/widgets': out=repo
 elif endpoint == 'repos/acme/widgets/issues/12': out=issue
 elif endpoint == 'repos/acme/widgets/pulls/13':
-    out=dict(pr, requested_reviewers=[{'login':'reviewer'}], statuses_url='https://api.github.com/repos/acme/widgets/commits/abc/status', draft=False, merged=False, head={'ref':'feature'}, base={'ref':'main'}, additions=10, deletions=3, changed_files=2, mergeable=True)
+    out=dict(pr, requested_reviewers=[{'login':'reviewer'}], statuses_url='https://api.github.com/repos/acme/widgets/commits/abc/status', draft=False, merged=False, head={'ref':'feature','sha':'abc'}, base={'ref':'main'}, additions=10, deletions=3, changed_files=2, mergeable=True)
 elif endpoint == 'repos/acme/widgets/commits/abc/status': out=[{'state':'success'},{'state':'success'}]
+elif endpoint == 'repos/acme/widgets/commits/abc/check-runs': out={'check_runs':[{'name':'Tests','status':'completed','conclusion':'success'},{'name':'Build','status':'completed','conclusion':'failure'}]}
+elif endpoint == 'repos/acme/widgets/actions/runs': out={'workflow_runs':[{'id':77,'name':'CI','display_title':'Improve widget','head_branch':'feature','head_sha':'abc','event':'pull_request','status':'completed','conclusion':'failure','updated_at':'2026-01-02T00:00:00Z'}]}
+elif endpoint == 'repos/acme/widgets/actions/runs/77': out={'id':77,'name':'CI','run_number':9,'head_branch':'feature','head_sha':'abc','event':'pull_request','status':'completed','conclusion':'failure','actor':{'login':'octo'},'created_at':'2026-01-02T00:00:00Z','updated_at':'2026-01-02T00:01:00Z','html_url':'https://github.com/acme/widgets/actions/runs/77'}
+elif endpoint == 'repos/acme/widgets/actions/runs/77/jobs': out={'jobs':[{'name':'Tests','status':'completed','conclusion':'success','started_at':'2026-01-02T00:00:00Z','completed_at':'2026-01-02T00:00:30Z'},{'name':'Build','status':'completed','conclusion':'failure'}]}
 elif endpoint == 'notifications/threads/99': out=notification
 else:
     print('unexpected endpoint '+endpoint,file=sys.stderr); raise SystemExit(2)
@@ -80,11 +84,11 @@ class ProviderTest(unittest.TestCase):
 
     def test_repository_drills_into_lists_and_overview(self):
         rows = self.run_provider("repository", "acme/widgets")
-        self.assertEqual([row["id"] for row in rows[:4]],
-                         ["overview", "issues", "pull-requests", "notifications"])
+        self.assertEqual([row["id"] for row in rows[:5]],
+                         ["overview", "issues", "pull-requests", "notifications", "actions"])
         self.assertTrue(all(row.get("icon") for row in rows))
         self.assertIn("document", rows[0])
-        self.assertTrue(all("submenu" in row for row in rows[1:4]))
+        self.assertTrue(all("submenu" in row for row in rows[1:5]))
         self.assertEqual([row["badge"] for row in rows[1:4]], ["4", "2", "1"])
         document = self.run_provider("repo-document", "acme/widgets")
         self.assertEqual(document["title"], "acme/widgets")
@@ -99,7 +103,9 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(issue["sections"][0]["format"], "markdown")
         pull = self.run_provider("pr-document", "acme/widgets", "13")
         fields = {field["label"]: field["value"] for field in pull["fields"]}
-        self.assertEqual(fields["Checks"], "Success")
+        self.assertEqual(fields["Checks"], "1 passed · 1 failed")
+        self.assertEqual(pull["sections"][0]["heading"], "Checks")
+        self.assertIn("Build — Failure", pull["sections"][0]["text"])
         self.assertIn("feature", fields["Branches"])
         self.assertEqual(pull["sections"][0]["format"], "markdown")
 
@@ -119,6 +125,16 @@ class ProviderTest(unittest.TestCase):
                                 text=True, capture_output=True, timeout=8)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported GitHub API host", result.stderr)
+
+    def test_action_runs_show_semantic_status_and_job_details(self):
+        rows = self.run_provider("repo-actions", "acme/widgets")
+        self.assertEqual(rows[0]["badge"], "Failure")
+        self.assertEqual(rows[0]["badgeTone"], "danger")
+        self.assertTrue(rows[0]["trailingText"])
+        document = self.run_provider("action-run-document", "acme/widgets", "77")
+        self.assertEqual(document["status"], "Failure")
+        self.assertIn("Tests — Success", document["sections"][0]["text"])
+        self.assertIn("Build — Failure", document["sections"][0]["text"])
 
     def test_notification_requires_explicit_mark_read(self):
         document = self.run_provider("notification-document", "99")
