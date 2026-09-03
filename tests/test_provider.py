@@ -122,8 +122,9 @@ class ProviderTest(unittest.TestCase):
         self.assertIn("--prompt", launch)
         self.assertIn(config_path, launch)
         self.assertIn("config.example.jsonc", launch)
-        self.assertIn("user will provide their requested configuration changes in the next message", launch)
-        self.assertIn("Do not inspect or change the file yet", launch)
+        self.assertIn("concise summary of the settings they can change", launch)
+        self.assertIn("ask what they want to change", launch)
+        self.assertIn("Do not change the configuration until the user provides follow-up instructions", launch)
 
     def test_repository_drills_into_lists_and_overview(self):
         rows = self.run_provider("repository", "acme/widgets")

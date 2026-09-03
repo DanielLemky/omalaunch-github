@@ -501,9 +501,10 @@ def edit_config_with_agent():
     ensure_config_file()
     prompt = (
         f"Help the user edit the Omalaunch GitHub plugin configuration at {CONFIG_PATH}. "
-        f"Use {config_example_path()} as the schema example. Do not inspect or change the file yet. "
-        "The user will provide their requested configuration changes in the next message. Wait for those "
-        "instructions, then preserve JSONC syntax, use version 1, and change only the requested settings."
+        f"Use {config_example_path()} as the schema example. Start by giving the user a concise summary "
+        "of the settings they can change, then ask what they want to change. Do not change the configuration "
+        "until the user provides follow-up instructions. After that, preserve JSONC syntax, use version 1, "
+        "and change only the requested settings."
     )
     os.execvp("omarchy-agent", ["omarchy-agent", "--prompt", prompt])
 
