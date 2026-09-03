@@ -197,6 +197,10 @@ class ProviderTest(unittest.TestCase):
         self.assertTrue(any(row["id"].startswith("repo:") for row in rows))
         self.assertFalse(any(row["id"].startswith("issue:") for row in rows))
 
+    def cache_files(self):
+        cache = Path(self.env["XDG_STATE_HOME"]) / "omarchy/omalaunch/extensions/quantumfire.github-cache"
+        return sorted(cache.glob("*.json"))
+
     def test_lists_use_cache_and_explicit_refresh_bypasses_it(self):
         self.run_provider("repositories")
         self.run_provider("repositories")
@@ -205,6 +209,35 @@ class ProviderTest(unittest.TestCase):
         self.run_provider("repositories", "--refresh")
         calls = self.call_log.read_text().splitlines()
         self.assertEqual(calls.count("GET user/repos"), 2)
+
+    def test_expired_and_corrupt_cache_entries_are_replaced(self):
+        self.run_provider("repositories")
+        cache_file = self.cache_files()[0]
+        os.utime(cache_file, (0, 0))
+        self.run_provider("repositories")
+        self.assertEqual(self.call_log.read_text().splitlines().count("GET user/repos"), 2)
+        cache_file.write_text("{")
+        self.run_provider("repositories")
+        self.assertEqual(self.call_log.read_text().splitlines().count("GET user/repos"), 3)
+        json.loads(cache_file.read_text())
+
+    def test_cache_writes_are_private_and_leave_no_temporary_file(self):
+        self.run_provider("repositories")
+        cache_file = self.cache_files()[0]
+        self.assertEqual(cache_file.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(cache_file.parent.glob(".*.tmp")), [])
+
+    def test_failed_refresh_preserves_the_previous_cache(self):
+        self.run_provider("repositories")
+        cache_file = self.cache_files()[0]
+        previous = cache_file.read_bytes()
+        failing_env = dict(self.env, GH_FAIL="1")
+        result = subprocess.run([str(PROVIDER), "repositories", "--refresh"], env=failing_env,
+                                text=True, capture_output=True, timeout=8)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(cache_file.read_bytes(), previous)
+        self.run_provider("repositories")
+        self.assertEqual(self.call_log.read_text().splitlines().count("GET user/repos"), 1)
 
     def test_general_and_repository_shortcuts_publish_distinct_starred_labels(self):
         self.run_provider("set-star", "general:issues", "true")
