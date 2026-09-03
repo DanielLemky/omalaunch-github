@@ -7,10 +7,9 @@
       "scope": "owned",
       "limit": 10,
       "overrides": {
-        // "company/important-project": true,
-        // "owner/noisy-project": false,
-      },
-    },
+        // "company/important-project": true
+      }
+    }
   },
 
   "issues": {
@@ -18,9 +17,9 @@
       "enabled": false,
       "limit": 10,
       "overrides": {
-        // "owner/project#123": true,
-      },
-    },
+        // "owner/project#123": true
+      }
+    }
   },
 
   "pullRequests": {
@@ -28,21 +27,21 @@
       "enabled": false,
       "limit": 10,
       "overrides": {
-        // "owner/project#456": true,
-      },
-    },
+        // "owner/project#456": true
+      }
+    }
   },
 
   "notifications": {
     "globalSearch": {
       "enabled": false,
-      "limit": 10,
-    },
+      "limit": 10
+    }
   },
 
   "globalSearch": {
     "excludedRepositories": [
-      // "company/noisy-project",
-    ],
-  },
+      // "company/noisy-project"
+    ]
+  }
 }
