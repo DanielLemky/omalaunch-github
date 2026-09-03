@@ -76,6 +76,7 @@ class ProviderTest(unittest.TestCase):
         self.assertTrue(any(row["id"].startswith("issue:") and "document" in row for row in search_rows))
         self.assertTrue(any(row["id"].startswith("pr:") and "document" in row for row in search_rows))
         self.assertTrue(any(row["id"].startswith("notification:") for row in search_rows))
+        self.assertTrue(all(row.get("trailingText") for row in search_rows))
 
     def test_repository_drills_into_lists_and_overview(self):
         rows = self.run_provider("repository", "acme/widgets")
@@ -95,10 +96,12 @@ class ProviderTest(unittest.TestCase):
         issue = self.run_provider("issue-document", "acme/widgets", "12")
         self.assertEqual(issue["status"], "Open")
         self.assertEqual(issue["sections"][0]["text"], "Issue body")
+        self.assertEqual(issue["sections"][0]["format"], "markdown")
         pull = self.run_provider("pr-document", "acme/widgets", "13")
         fields = {field["label"]: field["value"] for field in pull["fields"]}
         self.assertEqual(fields["Checks"], "Success")
         self.assertIn("feature", fields["Branches"])
+        self.assertEqual(pull["sections"][0]["format"], "markdown")
 
     def test_gh_failure_is_reported_without_partial_json(self):
         env = self.env.copy()

@@ -2,7 +2,7 @@
 
 An external [Omalaunch](https://github.com/daniel-lemky/omalaunch) menu extension for GitHub.
 
-It shows recent repositories, open issues and pull requests related to you, and unread notifications in global search. On-demand submenus and structured documents keep the root response small. Repository menus show open issue, open pull request, and unread notification counts. Repository documents show project data. Issue, pull request, and notification documents show metadata, body text, and Open and Copy URL actions.
+It shows recent repositories, open issues and pull requests related to you, and unread notifications in global search. Repository, issue, pull request, and notification lists include their latest update date. On-demand submenus and structured documents keep the root response small. Repository menus show open issue, open pull request, and unread notification counts. Repository documents show project data. Issue, pull request, and notification documents show metadata, safe host-rendered Markdown body text, copyable code blocks, and Open and Copy URL actions.
 
 The provider is read-only except for the explicit **Mark as read** notification action.
 
