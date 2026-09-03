@@ -1,0 +1,48 @@
+{
+  "version": 1,
+
+  "repositories": {
+    "globalSearch": {
+      "enabled": true,
+      "scope": "owned",
+      "limit": 10,
+      "overrides": {
+        // "company/important-project": true,
+        // "owner/noisy-project": false,
+      },
+    },
+  },
+
+  "issues": {
+    "globalSearch": {
+      "enabled": false,
+      "limit": 10,
+      "overrides": {
+        // "owner/project#123": true,
+      },
+    },
+  },
+
+  "pullRequests": {
+    "globalSearch": {
+      "enabled": false,
+      "limit": 10,
+      "overrides": {
+        // "owner/project#456": true,
+      },
+    },
+  },
+
+  "notifications": {
+    "globalSearch": {
+      "enabled": false,
+      "limit": 10,
+    },
+  },
+
+  "globalSearch": {
+    "excludedRepositories": [
+      // "company/noisy-project",
+    ],
+  },
+}

@@ -17,8 +17,153 @@ TIMEOUT = 4
 SELF = os.path.realpath(__file__)
 STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
                           "omarchy", "omalaunch", "extensions", "quantumfire.github.json")
+CONFIG_PATH = os.path.join(os.path.expanduser("~/.config"), "omarchy", "omalaunch", "extensions",
+                           "quantumfire.github.jsonc")
 CACHE_DIR = os.path.join(os.path.dirname(STATE_PATH), "quantumfire.github-cache")
 STAR_KEY = re.compile(r"^(?:general:(?:repositories|issues|pull-requests|notifications)|repo:[^:]+/[^:]+:(?:overview|issues|pull-requests|notifications|actions))$")
+
+
+def strip_jsonc(raw):
+    text = raw.decode("utf-8")
+    output = []
+    index = 0
+    in_string = escaped = False
+    while index < len(text):
+        character = text[index]
+        if in_string:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+        elif character == '"':
+            in_string = True
+            output.append(character)
+            index += 1
+        elif text.startswith("//", index):
+            end = text.find("\n", index + 2)
+            index = len(text) if end < 0 else end
+        elif text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("unterminated block comment")
+            output.extend("\n" for value in text[index:end + 2] if value == "\n")
+            index = end + 2
+        else:
+            output.append(character)
+            index += 1
+    text = "".join(output)
+    output = []
+    index = 0
+    in_string = escaped = False
+    while index < len(text):
+        character = text[index]
+        if in_string:
+            output.append(character)
+            if escaped: escaped = False
+            elif character == "\\": escaped = True
+            elif character == '"': in_string = False
+        elif character == '"':
+            in_string = True
+            output.append(character)
+        elif character == ",":
+            following = index + 1
+            while following < len(text) and text[following].isspace(): following += 1
+            if following >= len(text) or text[following] not in "]}": output.append(character)
+        else:
+            output.append(character)
+        index += 1
+    return "".join(output)
+
+
+def config_defaults():
+    return {
+        "repositories": {"enabled": True, "scope": "owned", "limit": 10, "overrides": {}},
+        "issues": {"enabled": False, "limit": 10, "overrides": {}},
+        "pullRequests": {"enabled": False, "limit": 10, "overrides": {}},
+        "notifications": {"enabled": False, "limit": 10},
+        "excludedRepositories": [],
+    }
+
+
+def validate_overrides(value, item_pattern):
+    if not isinstance(value, dict) or len(value) > 256:
+        raise ValueError("invalid overrides")
+    if any(not isinstance(key, str) or not item_pattern.fullmatch(key) or not isinstance(enabled, bool)
+           for key, enabled in value.items()):
+        raise ValueError("invalid override entry")
+    return dict(value)
+
+
+def load_config():
+    defaults = config_defaults()
+    try:
+        if not os.path.exists(CONFIG_PATH):
+            return defaults
+        if os.path.getsize(CONFIG_PATH) > 64 * 1024:
+            raise ValueError("file exceeds 64 KiB")
+        with open(CONFIG_PATH, "rb") as config_file:
+            value = json.loads(strip_jsonc(config_file.read()))
+        stack = [(value, 1)]
+        while stack:
+            current, level = stack.pop()
+            if level > 8: raise ValueError("nesting exceeds 8 levels")
+            if isinstance(current, dict): children = current.values()
+            elif isinstance(current, list): children = current
+            else: continue
+            stack.extend((child, level + 1) for child in children if isinstance(child, (dict, list)))
+        if not isinstance(value, dict) or value.get("version") != 1:
+            raise ValueError("invalid version")
+        allowed_root = {"version", "repositories", "issues", "pullRequests", "notifications", "globalSearch"}
+        if set(value) - allowed_root:
+            raise ValueError("unknown root field")
+        item_patterns = {
+            "repositories": re.compile(r"^[^/#:]+/[^/#:]+$"),
+            "issues": re.compile(r"^[^/#:]+/[^/#:]+#[1-9][0-9]*$"),
+            "pullRequests": re.compile(r"^[^/#:]+/[^/#:]+#[1-9][0-9]*$"),
+        }
+        for entity in ("repositories", "issues", "pullRequests", "notifications"):
+            raw_entity = value.get(entity, {})
+            if not isinstance(raw_entity, dict) or set(raw_entity) - {"globalSearch"}:
+                raise ValueError(f"invalid {entity} settings")
+            raw_search = raw_entity.get("globalSearch", {})
+            allowed = {"enabled", "limit"}
+            if entity == "repositories":
+                allowed |= {"scope", "overrides"}
+            elif entity != "notifications":
+                allowed.add("overrides")
+            if not isinstance(raw_search, dict) or set(raw_search) - allowed:
+                raise ValueError(f"invalid {entity} global search settings")
+            target = defaults[entity]
+            if "enabled" in raw_search:
+                if not isinstance(raw_search["enabled"], bool): raise ValueError("enabled must be boolean")
+                target["enabled"] = raw_search["enabled"]
+            if "limit" in raw_search:
+                limit = raw_search["limit"]
+                if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+                    raise ValueError("limit must be from 1 to 100")
+                target["limit"] = limit
+            if entity == "repositories" and "scope" in raw_search:
+                if raw_search["scope"] not in ("owned", "visible"):
+                    raise ValueError("invalid repository scope")
+                target["scope"] = raw_search["scope"]
+            if entity != "notifications" and "overrides" in raw_search:
+                target["overrides"] = validate_overrides(raw_search["overrides"], item_patterns[entity])
+        global_search = value.get("globalSearch", {})
+        if not isinstance(global_search, dict) or set(global_search) - {"excludedRepositories"}:
+            raise ValueError("invalid globalSearch settings")
+        excluded = global_search.get("excludedRepositories", [])
+        if (not isinstance(excluded, list) or len(excluded) > 256 or len(set(excluded)) != len(excluded)
+                or any(not isinstance(item, str) or not item_patterns["repositories"].fullmatch(item) for item in excluded)):
+            raise ValueError("invalid excludedRepositories")
+        defaults["excludedRepositories"] = excluded
+        return defaults
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        print(f"omalaunch-github: ignored invalid configuration: {error}", file=sys.stderr)
+        return defaults
 
 
 def cache_read(key, ttl):
@@ -325,16 +470,73 @@ def root_menu():
                       f"GitHub · {label}") for identifier, label, command, icon in definitions]
 
 
+def override_visible(key, repository, settings, excluded, default):
+    overrides = settings.get("overrides", {})
+    if key in overrides:
+        return overrides[key]
+    if repository in excluded:
+        return False
+    return default
+
+
 def global_search_menu():
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        jobs = [pool.submit(repositories, LIMIT, True),
-                pool.submit(search_rows, "issue", LIMIT, "", True),
-                pool.submit(search_rows, "pr", LIMIT, "", True),
-                pool.submit(notifications, LIMIT, "", True)]
-        groups = [job.result() for job in jobs]
+    config = load_config()
+    excluded = set(config["excludedRepositories"])
     rows = starred_shortcuts()
-    for group in groups:
-        rows.extend(group)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        repository_job = pool.submit(repository_data, True)
+        issue_job = pool.submit(search_data, "issue", "", True)
+        pull_job = pool.submit(search_data, "pr", "", True)
+        notification_job = pool.submit(notification_data, "", True)
+        viewer_job = pool.submit(cached_gh, "viewer", 300, "user", None, True)
+        repository_items = repository_job.result()
+        issue_items = issue_job.result().get("items", [])
+        pull_items = pull_job.result().get("items", [])
+        notification_items = notification_job.result()
+        viewer = compact(viewer_job.result().get("login"), 128)
+
+    repository_settings = config["repositories"]
+    included_repositories = []
+    seen_repositories = set()
+    for item in repository_items:
+        name = item.get("full_name", "")
+        owned = repository_settings["scope"] == "visible" or item.get("owner", {}).get("login") == viewer
+        default = repository_settings["enabled"] and owned and len(included_repositories) < repository_settings["limit"]
+        if override_visible(name, name, repository_settings, excluded, default):
+            included_repositories.append(repo_row(item))
+            seen_repositories.add(name)
+    for name, visible in repository_settings["overrides"].items():
+        if visible and name not in seen_repositories:
+            included_repositories.append(repo_row(cached_gh(f"repo:{name}", 60, f"repos/{name}")))
+    rows.extend(included_repositories)
+
+    for entity, kind in (("issues", "issue"), ("pullRequests", "pr")):
+        settings = config[entity]
+        candidates = (issue_items if kind == "issue" else pull_items) if settings["enabled"] else []
+        included = []
+        seen = set()
+        for item in candidates:
+            repository = repo_name_from_url(item.get("repository_url"))
+            key = f"{repository}#{item.get('number', '')}"
+            default = len(included) < settings["limit"]
+            if override_visible(key, repository, settings, excluded, default):
+                included.append(issue_row(item, kind))
+                seen.add(key)
+        for key, visible in settings["overrides"].items():
+            if not visible or key in seen:
+                continue
+            repository, number = key.rsplit("#", 1)
+            endpoint = f"repos/{repository}/{'pulls' if kind == 'pr' else 'issues'}/{number}"
+            item = cached_gh(f"override:{kind}:{key}", 60, endpoint)
+            item["repository_url"] = f"https://api.github.com/repos/{repository}"
+            if kind == "pr": item["pull_request"] = {"url": endpoint}
+            included.append(issue_row(item, kind))
+        rows.extend(included)
+
+    notification_settings = config["notifications"]
+    if notification_settings["enabled"]:
+        rows.extend(notification_row(item) for item in notification_items[:notification_settings["limit"]]
+                     if item.get("repository", {}).get("full_name", "") not in excluded)
     return rows[:100]
 
 

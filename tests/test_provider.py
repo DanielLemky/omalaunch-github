@@ -30,7 +30,8 @@ repo={'full_name':'acme/widgets','description':'Widget tools','language':'Python
 issue={'number':12,'title':'Fix widget','body':'Issue body','html_url':'https://github.com/acme/widgets/issues/12','repository_url':'https://api.github.com/repos/acme/widgets','user':{'login':'octo'},'assignees':[{'login':'dev'}],'labels':[{'name':'bug'}],'comments':2,'state':'open','created_at':'2026-01-01T00:00:00Z','updated_at':'2026-01-02T00:00:00Z'}
 pr=dict(issue, number=13, title='Improve widget', html_url='https://github.com/acme/widgets/pull/13', pull_request={'url':'x'})
 notification={'id':'99','unread':True,'reason':'review_requested','updated_at':'2026-01-02T00:00:00Z','repository':repo,'subject':{'title':'Improve widget','type':'PullRequest','url':os.environ.get('GH_SUBJECT_URL','https://api.github.com/repos/acme/widgets/pulls/13')}}
-if endpoint == 'user/repos': out=[repo]
+if endpoint == 'user': out={'login':'acme'}
+elif endpoint == 'user/repos': out=[repo]
 elif endpoint == 'search/issues':
     is_pr='is:pr' in fields.get('q',''); out={'total_count':2 if is_pr else 4,'items':[pr if is_pr else issue]}
 elif endpoint in ('notifications','repos/acme/widgets/notifications'): out=[notification]
@@ -61,6 +62,7 @@ class ProviderTest(unittest.TestCase):
         self.call_log = self.bin / "gh-calls.log"
         self.env = os.environ.copy()
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env["PATH"]
+        self.env["HOME"] = str(self.bin / "home")
         self.env["GH_LOG"] = str(self.log)
         self.env["GH_CALL_LOG"] = str(self.call_log)
         self.env["XDG_STATE_HOME"] = str(self.bin / "state")
@@ -74,6 +76,11 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
 
+    def write_config(self, content):
+        path = Path(self.env["HOME"]) / ".config/omarchy/omalaunch/extensions/quantumfire.github.jsonc"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
     def test_root_is_static_and_global_search_loads_separately(self):
         rows = self.run_provider("root")
         self.assertEqual([row["label"] for row in rows],
@@ -84,9 +91,9 @@ class ProviderTest(unittest.TestCase):
         search_rows = self.run_provider("global-search")
         self.assertLessEqual(len(search_rows), 100)
         self.assertTrue(any(row["id"].startswith("repo:") and "submenu" in row for row in search_rows))
-        self.assertTrue(any(row["id"].startswith("issue:") and "document" in row for row in search_rows))
-        self.assertTrue(any(row["id"].startswith("pr:") and "document" in row for row in search_rows))
-        self.assertTrue(any(row["id"].startswith("notification:") for row in search_rows))
+        self.assertFalse(any(row["id"].startswith("issue:") for row in search_rows))
+        self.assertFalse(any(row["id"].startswith("pr:") for row in search_rows))
+        self.assertFalse(any(row["id"].startswith("notification:") for row in search_rows))
         self.assertTrue(all(row.get("trailingText") for row in search_rows))
 
     def test_repository_drills_into_lists_and_overview(self):
@@ -133,6 +140,32 @@ class ProviderTest(unittest.TestCase):
                                 text=True, capture_output=True, timeout=8)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported GitHub API host", result.stderr)
+
+    def test_config_enables_exact_work_items_and_excludes_repository_defaults(self):
+        self.write_config('''{
+          "version": 1,
+          "repositories": {"globalSearch": {"enabled": true, "scope": "owned", "limit": 10,
+            "overrides": {"acme/widgets": false}}},
+          "issues": {"globalSearch": {"enabled": false, "overrides": {"acme/widgets#12": true}}},
+          "pullRequests": {"globalSearch": {"enabled": false, "overrides": {"acme/widgets#13": true}}},
+          "notifications": {"globalSearch": {"enabled": false}},
+          "globalSearch": {"excludedRepositories": ["acme/widgets"]},
+        }''')
+        rows = self.run_provider("global-search")
+        self.assertFalse(any(row["id"].startswith("repo:") for row in rows))
+        self.assertTrue(any(row["id"].startswith("issue:") for row in rows))
+        self.assertTrue(any(row["id"].startswith("pr:") for row in rows))
+        self.assertFalse(any(row["id"].startswith("notification:") for row in rows))
+
+    def test_invalid_config_uses_quiet_defaults(self):
+        self.write_config('{"version":1,"unknown":true}')
+        result = subprocess.run([str(PROVIDER), "global-search"], env=self.env, text=True,
+                                capture_output=True, timeout=8)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("ignored invalid configuration", result.stderr)
+        rows = json.loads(result.stdout)
+        self.assertTrue(any(row["id"].startswith("repo:") for row in rows))
+        self.assertFalse(any(row["id"].startswith("issue:") for row in rows))
 
     def test_lists_use_cache_and_explicit_refresh_bypasses_it(self):
         self.run_provider("repositories")
