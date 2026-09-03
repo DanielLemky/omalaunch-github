@@ -18,6 +18,8 @@ if os.environ.get('GH_FAIL'):
 method=args[args.index('--method')+1]
 endpoint=args[args.index('--method')+2]
 fields={}
+if os.environ.get('GH_CALL_LOG'):
+    with open(os.environ['GH_CALL_LOG'],'a') as f: f.write(method+' '+endpoint+'\n')
 for i, value in enumerate(args):
     if value == '-f' and i+1 < len(args):
         key, data=args[i+1].split('=',1); fields[key]=data
@@ -56,9 +58,11 @@ class ProviderTest(unittest.TestCase):
         fake.write_text(FAKE_GH)
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
         self.log = self.bin / "gh.log"
+        self.call_log = self.bin / "gh-calls.log"
         self.env = os.environ.copy()
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env["PATH"]
         self.env["GH_LOG"] = str(self.log)
+        self.env["GH_CALL_LOG"] = str(self.call_log)
         self.env["XDG_STATE_HOME"] = str(self.bin / "state")
 
     def tearDown(self):
@@ -76,6 +80,7 @@ class ProviderTest(unittest.TestCase):
                          ["Repositories", "Issues", "Pull Requests", "Notifications"])
         self.assertTrue(all(row["globalSearch"] is False for row in rows))
         self.assertTrue(all(row["starAction"] == "star" for row in rows))
+        self.assertTrue(all(row["submenu"]["refreshCommand"][-1] == "--refresh" for row in rows))
         search_rows = self.run_provider("global-search")
         self.assertLessEqual(len(search_rows), 100)
         self.assertTrue(any(row["id"].startswith("repo:") and "submenu" in row for row in search_rows))
@@ -128,6 +133,15 @@ class ProviderTest(unittest.TestCase):
                                 text=True, capture_output=True, timeout=8)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported GitHub API host", result.stderr)
+
+    def test_lists_use_cache_and_explicit_refresh_bypasses_it(self):
+        self.run_provider("repositories")
+        self.run_provider("repositories")
+        calls = self.call_log.read_text().splitlines()
+        self.assertEqual(calls.count("GET user/repos"), 1)
+        self.run_provider("repositories", "--refresh")
+        calls = self.call_log.read_text().splitlines()
+        self.assertEqual(calls.count("GET user/repos"), 2)
 
     def test_general_and_repository_shortcuts_publish_distinct_starred_labels(self):
         self.run_provider("set-star", "general:issues", "true")

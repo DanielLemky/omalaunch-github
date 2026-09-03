@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Read GitHub state through gh and emit bounded Omalaunch menu documents."""
 
+import hashlib
 import json
 import os
 import re
 import subprocess
+import time
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -15,7 +17,55 @@ TIMEOUT = 4
 SELF = os.path.realpath(__file__)
 STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
                           "omarchy", "omalaunch", "extensions", "quantumfire.github.json")
+CACHE_DIR = os.path.join(os.path.dirname(STATE_PATH), "quantumfire.github-cache")
 STAR_KEY = re.compile(r"^(?:general:(?:repositories|issues|pull-requests|notifications)|repo:[^:]+/[^:]+:(?:overview|issues|pull-requests|notifications|actions))$")
+
+
+def cache_read(key, ttl):
+    path = os.path.join(CACHE_DIR, hashlib.sha256(key.encode()).hexdigest() + ".json")
+    try:
+        if time.time() - os.path.getmtime(path) > ttl:
+            return None
+        with open(path, encoding="utf-8") as cache_file:
+            return json.load(cache_file)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def cache_write(key, value):
+    os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
+    path = os.path.join(CACHE_DIR, hashlib.sha256(key.encode()).hexdigest() + ".json")
+    temporary = path + f".tmp.{os.getpid()}"
+    with open(temporary, "w", encoding="utf-8") as cache_file:
+        json.dump(value, cache_file, separators=(",", ":"))
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+    return value
+
+
+def cached_gh(key, ttl, endpoint, fields=None, force=False):
+    if not force:
+        cached = cache_read(key, ttl)
+        if cached is not None:
+            return cached
+    return cache_write(key, gh(endpoint, fields))
+
+
+def cached_value(key, ttl, force, producer):
+    if not force:
+        cached = cache_read(key, ttl)
+        if cached is not None:
+            return cached
+    return cache_write(key, producer())
+
+
+def clear_cache():
+    try:
+        for name in os.listdir(CACHE_DIR):
+            if name.endswith(".json"):
+                os.unlink(os.path.join(CACHE_DIR, name))
+    except OSError:
+        pass
 
 
 def load_stars():
@@ -165,7 +215,8 @@ def repo_row(repo):
         "description": compact(repo.get("description") or "Repository"),
         "aliases": [repo.get("language") or "", "repository", "repo"],
         "context": {"repository": name},
-        "submenu": {"command": [SELF, "repository", name]},
+        "submenu": {"command": [SELF, "repository", name],
+                    "refreshCommand": [SELF, "repository", name, "--refresh"]},
     }
 
 
@@ -181,7 +232,8 @@ def issue_row(item, kind=None):
         "description": f"{repo} #{number} · {compact(item.get('user', {}).get('login'))}",
         "aliases": [repo, f"#{number}", "pull request" if is_pr else "issue"],
         "context": {"repository": repo, "number": number},
-        "document": {"command": [SELF, f"{prefix}-document", repo, number]},
+        "document": {"command": [SELF, f"{prefix}-document", repo, number],
+                     "refreshCommand": [SELF, f"{prefix}-document", repo, number, "--refresh"]},
     }
 
 
@@ -195,30 +247,48 @@ def notification_row(item):
         "description": f"{repo} · {compact(item.get('reason'))} · {compact(subject.get('type'))}",
         "aliases": [repo, item.get("reason") or "", subject.get("type") or "", "notification"],
         "context": {"thread": thread},
-        "document": {"command": [SELF, "notification-document", thread]},
+        "document": {"command": [SELF, "notification-document", thread],
+                     "refreshCommand": [SELF, "notification-document", thread, "--refresh"]},
     }
 
 
-def repositories(limit=LIMIT):
-    data = gh("user/repos", {"affiliation": "owner,collaborator,organization_member", "sort": "updated", "direction": "desc", "per_page": str(limit)})
-    return [repo_row(item) for item in data if not item.get("archived")][:limit]
+def repository_data(force=False):
+    return cached_gh("repositories", 60, "user/repos", {
+        "affiliation": "owner,collaborator,organization_member", "sort": "updated",
+        "direction": "desc", "per_page": "100"
+    }, force)
 
 
-def search_rows(kind, limit=LIMIT, repository=""):
+def repositories(limit=LIMIT, force=False):
+    return [repo_row(item) for item in repository_data(force) if not item.get("archived")][:limit]
+
+
+def search_data(kind, repository="", force=False):
     qualifier = "is:pr" if kind == "pr" else "is:issue"
     query = f"{qualifier} is:open " + (f"repo:{repository}" if repository else "involves:@me archived:false")
-    data = gh("search/issues", {"q": query, "sort": "updated", "order": "desc", "per_page": str(limit)})
-    return [issue_row(item, kind) for item in data.get("items", [])][:limit]
+    return cached_gh(f"search:{kind}:{repository or '@me'}", 60, "search/issues", {
+        "q": query, "sort": "updated", "order": "desc", "per_page": "100"
+    }, force)
 
 
-def notifications(limit=LIMIT, repository=""):
+def search_rows(kind, limit=LIMIT, repository="", force=False):
+    return [issue_row(item, kind) for item in search_data(kind, repository, force).get("items", [])][:limit]
+
+
+def notification_data(repository="", force=False):
     endpoint = f"repos/{repository}/notifications" if repository else "notifications"
-    data = gh(endpoint, {"all": "false", "participating": "false", "per_page": str(limit)})
-    return [notification_row(item) for item in data][:limit]
+    return cached_gh(f"notifications:{repository or '@me'}", 60, endpoint, {
+        "all": "false", "participating": "false", "per_page": "100"
+    }, force)
 
 
-def action_runs(repository, limit=80):
-    data = gh(f"repos/{repository}/actions/runs", {"per_page": str(min(limit, 100))})
+def notifications(limit=LIMIT, repository="", force=False):
+    return [notification_row(item) for item in notification_data(repository, force)][:limit]
+
+
+def action_runs(repository, limit=30, force=False):
+    data = cached_gh(f"actions:{repository}", 60, f"repos/{repository}/actions/runs",
+                     {"per_page": "30"}, force)
     rows = []
     for run in data.get("workflow_runs", [])[:limit]:
         run_id = str(run.get("id", ""))
@@ -231,14 +301,17 @@ def action_runs(repository, limit=80):
             "description": " · ".join(value for value in (branch, event) if value),
             "trailingText": list_date(run.get("updated_at") or run.get("created_at")),
             "badge": label, "badgeTone": tone,
-            "document": {"command": [SELF, "action-run-document", repository, run_id]},
+            "document": {"command": [SELF, "action-run-document", repository, run_id],
+                         "refreshCommand": [SELF, "action-run-document", repository, run_id, "--refresh"]},
         })
     return rows
 
 
 def category(identifier, label, command, icon=""):
+    provider_command = [SELF] + command
     return {"id": identifier, "label": label, "icon": icon, "globalSearch": False,
-            "submenu": {"command": [SELF] + command}}
+            "submenu": {"command": provider_command,
+                        "refreshCommand": provider_command + ["--refresh"]}}
 
 
 def root_menu():
@@ -254,8 +327,10 @@ def root_menu():
 
 def global_search_menu():
     with ThreadPoolExecutor(max_workers=4) as pool:
-        jobs = [pool.submit(repositories), pool.submit(search_rows, "issue"),
-                pool.submit(search_rows, "pr"), pool.submit(notifications)]
+        jobs = [pool.submit(repositories, LIMIT, True),
+                pool.submit(search_rows, "issue", LIMIT, "", True),
+                pool.submit(search_rows, "pr", LIMIT, "", True),
+                pool.submit(notifications, LIMIT, "", True)]
         groups = [job.result() for job in jobs]
     rows = starred_shortcuts()
     for group in groups:
@@ -263,29 +338,26 @@ def global_search_menu():
     return rows[:100]
 
 
-def repository_counts(name):
-    def search_count(kind):
-        data = gh("search/issues", {
-            "q": f"is:{kind} is:open repo:{name}", "per_page": "1"
-        })
-        return int(data.get("total_count", len(data.get("items", []))))
-
+def repository_counts(name, force=False):
     with ThreadPoolExecutor(max_workers=3) as pool:
-        issue_job = pool.submit(search_count, "issue")
-        pull_job = pool.submit(search_count, "pr")
-        notification_job = pool.submit(gh, f"repos/{name}/notifications", {
-            "all": "false", "participating": "false", "per_page": "100"
-        })
-        return issue_job.result(), pull_job.result(), len(notification_job.result())
+        issue_job = pool.submit(search_data, "issue", name, force)
+        pull_job = pool.submit(search_data, "pr", name, force)
+        notification_job = pool.submit(notification_data, name, force)
+        issues = issue_job.result()
+        pulls = pull_job.result()
+        repo_notifications = notification_job.result()
+        return (int(issues.get("total_count", len(issues.get("items", [])))),
+                int(pulls.get("total_count", len(pulls.get("items", [])))),
+                len(repo_notifications))
 
 
 def repository_shortcut(name, section):
     definitions = {
-        "overview": ("Overview", "󰋜", {"document": {"command": [SELF, "repo-document", name]}}),
-        "issues": ("Issues", "󰅚", {"submenu": {"command": [SELF, "repo-issues", name]}}),
-        "pull-requests": ("Pull Requests", "󰘬", {"submenu": {"command": [SELF, "repo-pull-requests", name]}}),
-        "notifications": ("Notifications", "󰂚", {"submenu": {"command": [SELF, "repo-notifications", name]}}),
-        "actions": ("Actions", "󰑮", {"submenu": {"command": [SELF, "repo-actions", name]}}),
+        "overview": ("Overview", "󰋜", {"document": {"command": [SELF, "repo-document", name], "refreshCommand": [SELF, "repo-document", name, "--refresh"]}}),
+        "issues": ("Issues", "󰅚", {"submenu": {"command": [SELF, "repo-issues", name], "refreshCommand": [SELF, "repo-issues", name, "--refresh"]}}),
+        "pull-requests": ("Pull Requests", "󰘬", {"submenu": {"command": [SELF, "repo-pull-requests", name], "refreshCommand": [SELF, "repo-pull-requests", name, "--refresh"]}}),
+        "notifications": ("Notifications", "󰂚", {"submenu": {"command": [SELF, "repo-notifications", name], "refreshCommand": [SELF, "repo-notifications", name, "--refresh"]}}),
+        "actions": ("Actions", "󰑮", {"submenu": {"command": [SELF, "repo-actions", name], "refreshCommand": [SELF, "repo-actions", name, "--refresh"]}}),
     }
     label, icon, behavior = definitions[section]
     row = {"id": section, "label": label, "icon": icon, "globalSearch": False}
@@ -309,9 +381,9 @@ def starred_shortcuts():
     return rows
 
 
-def repository_menu(name):
+def repository_menu(name, force=False):
     url = f"https://github.com/{name}"
-    issue_count, pull_count, notification_count = repository_counts(name)
+    issue_count, pull_count, notification_count = repository_counts(name, force)
     overview = repository_shortcut(name, "overview")
     issues = repository_shortcut(name, "issues")
     issues["badge"] = str(issue_count)
@@ -337,7 +409,7 @@ def repo_document(name):
     url = item.get("html_url") or f"https://github.com/{name}"
     topics = [compact(topic, 64) for topic in item.get("topics", []) if compact(topic, 64)]
     sections = [{"heading": "Topics", "text": "  ·  ".join(topics)}] if topics else []
-    emit({
+    return {
         "title": item.get("full_name") or name, "subtitle": compact(item.get("description")),
         "icon": "󰊢",
         "status": "Archived" if item.get("archived") else ("Private" if item.get("private") else "Public"),
@@ -353,7 +425,7 @@ def repo_document(name):
             {"label": "Updated", "value": date(item.get("updated_at"))},
         ],
         "sections": sections, "actions": [action_open(url), action_copy(url)],
-    })
+    }
 
 
 def issue_document(repo, number):
@@ -361,7 +433,7 @@ def issue_document(repo, number):
     url = item.get("html_url", "")
     labels = ", ".join(label.get("name", "") for label in item.get("labels", [])) or "—"
     assignees = ", ".join(user.get("login", "") for user in item.get("assignees", [])) or "—"
-    emit({
+    return {
         "title": item.get("title") or f"Issue #{number}", "subtitle": f"{repo} #{number}", "icon": "󰅚",
         "status": compact(item.get("state"), 64).title(),
         "fields": [
@@ -373,7 +445,7 @@ def issue_document(repo, number):
         ],
         "sections": [{"heading": "Description", "text": (item.get("body") or "No description.")[:32768], "format": "markdown"}],
         "actions": [action_open(url), action_copy(url)],
-    })
+    }
 
 
 def combined_status(value):
@@ -424,7 +496,7 @@ def pr_document(repo, number):
     if check_lines:
         sections.append({"heading": "Checks", "text": "\n".join(check_lines), "format": "markdown"})
     sections.append({"heading": "Description", "text": (item.get("body") or "No description.")[:32768], "format": "markdown"})
-    emit({
+    return {
         "title": item.get("title") or f"Pull request #{number}", "subtitle": f"{repo} #{number}", "icon": "󰘬", "status": state,
         "fields": [
             {"label": "Author", "value": compact(item.get("user", {}).get("login"))},
@@ -438,7 +510,7 @@ def pr_document(repo, number):
         ],
         "sections": sections,
         "actions": [action_open(url), action_copy(url)],
-    })
+    }
 
 
 def notification_document(thread):
@@ -452,7 +524,7 @@ def notification_document(thread):
     actions = [action_open(url), action_copy(url), {
         "id": "mark-read", "label": "Mark as read", "command": [SELF, "mark-read", thread]
     }]
-    emit({
+    return {
         "title": subject.get("title") or "GitHub notification", "subtitle": repo, "icon": "󰂚",
         "status": "Unread" if item.get("unread", True) else "Read",
         "fields": [
@@ -463,7 +535,7 @@ def notification_document(thread):
         ],
         "sections": [{"heading": "Description", "text": (related.get("body") or "No description is available.")[:32768], "format": "markdown"}],
         "actions": actions,
-    })
+    }
 
 
 def action_run_document(repo, run_id):
@@ -484,7 +556,7 @@ def action_run_document(repo, run_id):
         job_lines.append(f"- {marker} {compact(job.get('name') or 'Job', 180)} — {job_label}{duration}")
     url = run.get("html_url") or f"https://github.com/{repo}/actions/runs/{run_id}"
     actor = run.get("actor") or run.get("triggering_actor") or {}
-    emit({
+    return {
         "title": run.get("name") or run.get("display_title") or f"Workflow run {run_id}",
         "subtitle": f"{repo} · Run #{run.get('run_number', run_id)}", "icon": "󰑮", "status": label,
         "fields": [
@@ -498,29 +570,39 @@ def action_run_document(repo, run_id):
         "sections": [{"heading": "Jobs", "text": "\n".join(job_lines) if job_lines else "No jobs are available.",
                       "format": "markdown"}],
         "actions": [action_open(url), action_copy(url)],
-    })
+    }
 
 
 def main():
     args = sys.argv[1:]
+    force = bool(args and args[-1] == "--refresh")
+    if force:
+        args = args[:-1]
     command = args[0] if args else "menu"
     if command in ("menu", "root"): emit(root_menu())
     elif command == "global-search": emit(global_search_menu())
-    elif command == "repositories": emit(repositories(80))
-    elif command == "issues": emit(search_rows("issue", 80))
-    elif command == "pull-requests": emit(search_rows("pr", 80))
-    elif command == "notifications": emit(notifications(80))
-    elif command == "repository" and len(args) == 2: emit(repository_menu(args[1]))
-    elif command == "repo-issues" and len(args) == 2: emit(search_rows("issue", 80, args[1]))
-    elif command == "repo-pull-requests" and len(args) == 2: emit(search_rows("pr", 80, args[1]))
-    elif command == "repo-notifications" and len(args) == 2: emit(notifications(80, args[1]))
-    elif command == "repo-actions" and len(args) == 2: emit(action_runs(args[1], 80))
-    elif command == "action-run-document" and len(args) == 3: action_run_document(args[1], args[2])
-    elif command == "repo-document" and len(args) == 2: repo_document(args[1])
-    elif command == "issue-document" and len(args) == 3: issue_document(args[1], args[2])
-    elif command == "pr-document" and len(args) == 3: pr_document(args[1], args[2])
-    elif command == "notification-document" and len(args) == 2: notification_document(args[1])
-    elif command == "mark-read" and len(args) == 2: gh(f"notifications/threads/{args[1]}", method="PATCH")
+    elif command == "repositories": emit(repositories(80, force))
+    elif command == "issues": emit(search_rows("issue", 80, "", force))
+    elif command == "pull-requests": emit(search_rows("pr", 80, "", force))
+    elif command == "notifications": emit(notifications(80, "", force))
+    elif command == "repository" and len(args) == 2: emit(repository_menu(args[1], force))
+    elif command == "repo-issues" and len(args) == 2: emit(search_rows("issue", 80, args[1], force))
+    elif command == "repo-pull-requests" and len(args) == 2: emit(search_rows("pr", 80, args[1], force))
+    elif command == "repo-notifications" and len(args) == 2: emit(notifications(80, args[1], force))
+    elif command == "repo-actions" and len(args) == 2: emit(action_runs(args[1], 30, force))
+    elif command == "action-run-document" and len(args) == 3: emit(cached_value(
+        f"action-run:{args[1]}:{args[2]}", 30, force, lambda: action_run_document(args[1], args[2])))
+    elif command == "repo-document" and len(args) == 2: emit(cached_value(
+        f"repo-document:{args[1]}", 30, force, lambda: repo_document(args[1])))
+    elif command == "issue-document" and len(args) == 3: emit(cached_value(
+        f"issue-document:{args[1]}:{args[2]}", 30, force, lambda: issue_document(args[1], args[2])))
+    elif command == "pr-document" and len(args) == 3: emit(cached_value(
+        f"pr-document:{args[1]}:{args[2]}", 30, force, lambda: pr_document(args[1], args[2])))
+    elif command == "notification-document" and len(args) == 2: emit(cached_value(
+        f"notification-document:{args[1]}", 30, force, lambda: notification_document(args[1])))
+    elif command == "mark-read" and len(args) == 2:
+        gh(f"notifications/threads/{args[1]}", method="PATCH")
+        clear_cache()
     elif command == "set-star" and len(args) == 3: set_star(args[1], args[2])
     else: fail("invalid command")
 
