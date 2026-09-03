@@ -81,11 +81,14 @@ class ProviderTest(unittest.TestCase):
         rows = self.run_provider("repository", "acme/widgets")
         self.assertEqual([row["id"] for row in rows[:4]],
                          ["overview", "issues", "pull-requests", "notifications"])
+        self.assertTrue(all(row.get("icon") for row in rows))
         self.assertIn("document", rows[0])
         self.assertTrue(all("submenu" in row for row in rows[1:4]))
         self.assertEqual([row["badge"] for row in rows[1:4]], ["4", "2", "1"])
         document = self.run_provider("repo-document", "acme/widgets")
         self.assertEqual(document["title"], "acme/widgets")
+        self.assertTrue(document["icon"])
+        self.assertEqual([stat["label"] for stat in document["stats"]], ["Stars", "Forks", "Open issues"])
         self.assertEqual(len(document["actions"]), 2)
 
     def test_issue_and_pr_documents_include_details(self):

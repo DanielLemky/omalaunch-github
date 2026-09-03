@@ -73,7 +73,7 @@ def repo_name_from_url(url):
 def repo_row(repo):
     name = repo.get("full_name", "")
     return {
-        "id": f"repo:{name}", "label": name,
+        "id": f"repo:{name}", "label": name, "icon": "󰊢",
         "description": compact(repo.get("description") or "Repository"),
         "aliases": [repo.get("language") or "", "repository", "repo"],
         "context": {"repository": name},
@@ -89,6 +89,7 @@ def issue_row(item, kind=None):
     prefix = "pr" if is_pr else "issue"
     return {
         "id": f"{prefix}:{repo}#{number}", "label": label,
+        "icon": "󰘬" if is_pr else "󰅚",
         "description": f"{repo} #{number} · {compact(item.get('user', {}).get('login'))}",
         "aliases": [repo, f"#{number}", "pull request" if is_pr else "issue"],
         "context": {"repository": repo, "number": number},
@@ -101,7 +102,7 @@ def notification_row(item):
     repo = (item.get("repository") or {}).get("full_name", "")
     thread = str(item.get("id", ""))
     return {
-        "id": f"notification:{thread}", "label": compact(subject.get("title"), 256),
+        "id": f"notification:{thread}", "label": compact(subject.get("title"), 256), "icon": "󰂚",
         "description": f"{repo} · {compact(item.get('reason'))} · {compact(subject.get('type'))}",
         "aliases": [repo, item.get("reason") or "", subject.get("type") or "", "notification"],
         "context": {"thread": thread},
@@ -127,16 +128,17 @@ def notifications(limit=LIMIT, repository=""):
     return [notification_row(item) for item in data][:limit]
 
 
-def category(identifier, label, command):
-    return {"id": identifier, "label": label, "globalSearch": False, "submenu": {"command": [SELF] + command}}
+def category(identifier, label, command, icon=""):
+    return {"id": identifier, "label": label, "icon": icon, "globalSearch": False,
+            "submenu": {"command": [SELF] + command}}
 
 
 def root_menu():
     return [
-        category("repositories", "Repositories", ["repositories"]),
-        category("issues", "Issues", ["issues"]),
-        category("pull-requests", "Pull Requests", ["pull-requests"]),
-        category("notifications", "Notifications", ["notifications"]),
+        category("repositories", "Repositories", ["repositories"], "󰊢"),
+        category("issues", "Issues", ["issues"], "󰅚"),
+        category("pull-requests", "Pull Requests", ["pull-requests"], "󰘬"),
+        category("notifications", "Notifications", ["notifications"], "󰂚"),
     ]
 
 
@@ -171,19 +173,19 @@ def repository_menu(name):
     encoded = name
     url = f"https://github.com/{name}"
     issue_count, pull_count, notification_count = repository_counts(name)
-    issues = category("issues", "Issues", ["repo-issues", encoded])
+    issues = category("issues", "Issues", ["repo-issues", encoded], "󰅚")
     issues["badge"] = str(issue_count)
-    pulls = category("pull-requests", "Pull Requests", ["repo-pull-requests", encoded])
+    pulls = category("pull-requests", "Pull Requests", ["repo-pull-requests", encoded], "󰘬")
     pulls["badge"] = str(pull_count)
-    repo_notifications = category("notifications", "Notifications", ["repo-notifications", encoded])
+    repo_notifications = category("notifications", "Notifications", ["repo-notifications", encoded], "󰂚")
     repo_notifications["badge"] = "100+" if notification_count >= 100 else str(notification_count)
     return [
-        {"id": "overview", "label": "Overview", "document": {"command": [SELF, "repo-document", name]}},
+        {"id": "overview", "label": "Overview", "icon": "󰋜", "document": {"command": [SELF, "repo-document", name]}},
         issues,
         pulls,
         repo_notifications,
-        {"id": "open", "label": "Open on GitHub", "command": ["xdg-open", url], "closeOnSuccess": True},
-        {"id": "copy-url", "label": "Copy URL", "command": ["wl-copy", "--", url]},
+        {"id": "open", "label": "Open on GitHub", "icon": "󰖟", "command": ["xdg-open", url], "closeOnSuccess": True},
+        {"id": "copy-url", "label": "Copy URL", "icon": "󰆏", "command": ["wl-copy", "--", url]},
     ]
 
 
@@ -195,19 +197,24 @@ def emit(value):
 def repo_document(name):
     item = gh(f"repos/{name}")
     url = item.get("html_url") or f"https://github.com/{name}"
+    topics = [compact(topic, 64) for topic in item.get("topics", []) if compact(topic, 64)]
+    sections = [{"heading": "Topics", "text": "  ·  ".join(topics)}] if topics else []
     emit({
         "title": item.get("full_name") or name, "subtitle": compact(item.get("description")),
+        "icon": "󰊢",
         "status": "Archived" if item.get("archived") else ("Private" if item.get("private") else "Public"),
+        "stats": [
+            {"label": "Stars", "value": str(item.get("stargazers_count", 0)), "icon": "󰓎"},
+            {"label": "Forks", "value": str(item.get("forks_count", 0)), "icon": "󰘬"},
+            {"label": "Open issues", "value": str(item.get("open_issues_count", 0)), "icon": "󰅚"},
+        ],
         "fields": [
             {"label": "Owner", "value": compact(item.get("owner", {}).get("login"))},
             {"label": "Language", "value": compact(item.get("language")) or "—"},
             {"label": "Default branch", "value": compact(item.get("default_branch"))},
-            {"label": "Stars", "value": str(item.get("stargazers_count", 0))},
-            {"label": "Forks", "value": str(item.get("forks_count", 0))},
-            {"label": "Open issues", "value": str(item.get("open_issues_count", 0))},
             {"label": "Updated", "value": date(item.get("updated_at"))},
         ],
-        "sections": [], "actions": [action_open(url), action_copy(url)],
+        "sections": sections, "actions": [action_open(url), action_copy(url)],
     })
 
 
@@ -217,7 +224,7 @@ def issue_document(repo, number):
     labels = ", ".join(label.get("name", "") for label in item.get("labels", [])) or "—"
     assignees = ", ".join(user.get("login", "") for user in item.get("assignees", [])) or "—"
     emit({
-        "title": item.get("title") or f"Issue #{number}", "subtitle": f"{repo} #{number}",
+        "title": item.get("title") or f"Issue #{number}", "subtitle": f"{repo} #{number}", "icon": "󰅚",
         "status": compact(item.get("state"), 64).title(),
         "fields": [
             {"label": "Author", "value": compact(item.get("user", {}).get("login"))},
@@ -243,7 +250,7 @@ def pr_document(repo, number):
     reviewers = ", ".join(user.get("login", "") for user in item.get("requested_reviewers", [])) or "—"
     state = "Draft" if item.get("draft") else ("Merged" if item.get("merged") else compact(item.get("state")).title())
     emit({
-        "title": item.get("title") or f"Pull request #{number}", "subtitle": f"{repo} #{number}", "status": state,
+        "title": item.get("title") or f"Pull request #{number}", "subtitle": f"{repo} #{number}", "icon": "󰘬", "status": state,
         "fields": [
             {"label": "Author", "value": compact(item.get("user", {}).get("login"))},
             {"label": "Reviewers", "value": reviewers},
@@ -271,7 +278,7 @@ def notification_document(thread):
         "id": "mark-read", "label": "Mark as read", "command": [SELF, "mark-read", thread]
     }]
     emit({
-        "title": subject.get("title") or "GitHub notification", "subtitle": repo,
+        "title": subject.get("title") or "GitHub notification", "subtitle": repo, "icon": "󰂚",
         "status": "Unread" if item.get("unread", True) else "Read",
         "fields": [
             {"label": "Reason", "value": compact(item.get("reason")).replace("_", " ").title()},
