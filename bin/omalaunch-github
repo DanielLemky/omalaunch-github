@@ -81,7 +81,7 @@ def strip_jsonc(raw):
 
 def config_defaults():
     return {
-        "repositories": {"enabled": True, "scope": "owned", "limit": 10, "overrides": {}},
+        "repositories": {"enabled": False, "scope": "owned", "limit": 10, "overrides": {}},
         "issues": {"enabled": False, "limit": 10, "overrides": {}},
         "pullRequests": {"enabled": False, "limit": 10, "overrides": {}},
         "notifications": {"enabled": False, "limit": 10},

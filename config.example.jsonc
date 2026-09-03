@@ -3,7 +3,7 @@
 
   "repositories": {
     "globalSearch": {
-      "enabled": true,
+      "enabled": false,
       "scope": "owned",
       "limit": 10,
       "overrides": {

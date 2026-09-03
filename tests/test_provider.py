@@ -95,12 +95,14 @@ class ProviderTest(unittest.TestCase):
         self.assertNotIn("starAction", rows[4])
         self.assertTrue(all(row["submenu"]["refreshCommand"][-1] == "--refresh" for row in rows))
         search_rows = self.run_provider("global-search")
-        self.assertLessEqual(len(search_rows), 100)
-        self.assertTrue(any(row["id"].startswith("repo:") and "submenu" in row for row in search_rows))
+        self.assertEqual(search_rows, [])
         self.assertFalse(any(row["id"].startswith("issue:") for row in search_rows))
         self.assertFalse(any(row["id"].startswith("pr:") for row in search_rows))
         self.assertFalse(any(row["id"].startswith("notification:") for row in search_rows))
-        self.assertTrue(all(row.get("trailingText") for row in search_rows))
+        calls = self.call_log.read_text()
+        self.assertIn("GET user/repos", calls)
+        self.assertIn("GET search/issues", calls)
+        self.assertIn("GET notifications", calls)
 
     def test_configuration_menu_opens_editor_or_default_agent(self):
         rows = self.run_provider("configuration")
@@ -171,6 +173,15 @@ class ProviderTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported GitHub API host", result.stderr)
 
+    def test_config_can_enable_repository_global_search(self):
+        self.write_config('''{
+          "version": 1,
+          "repositories": {"globalSearch": {"enabled": true, "scope": "owned", "limit": 10}}
+        }''')
+        rows = self.run_provider("global-search")
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["id"].startswith("repo:"))
+
     def test_config_enables_exact_work_items_and_excludes_repository_defaults(self):
         self.write_config('''{
           "version": 1,
@@ -194,8 +205,7 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("ignored invalid configuration", result.stderr)
         rows = json.loads(result.stdout)
-        self.assertTrue(any(row["id"].startswith("repo:") for row in rows))
-        self.assertFalse(any(row["id"].startswith("issue:") for row in rows))
+        self.assertEqual(rows, [])
 
     def cache_files(self):
         cache = Path(self.env["XDG_STATE_HOME"]) / "omarchy/omalaunch/extensions/quantumfire.github-cache"
