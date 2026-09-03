@@ -58,6 +58,10 @@ class ProviderTest(unittest.TestCase):
         fake = self.bin / "gh"
         fake.write_text(FAKE_GH)
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        for command in ("omarchy-launch-editor", "omarchy-agent"):
+            launcher = self.bin / command
+            launcher.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LAUNCH_LOG\"\n")
+            launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
         self.log = self.bin / "gh.log"
         self.call_log = self.bin / "gh-calls.log"
         self.env = os.environ.copy()
@@ -65,6 +69,7 @@ class ProviderTest(unittest.TestCase):
         self.env["HOME"] = str(self.bin / "home")
         self.env["GH_LOG"] = str(self.log)
         self.env["GH_CALL_LOG"] = str(self.call_log)
+        self.env["LAUNCH_LOG"] = str(self.bin / "launch.log")
         self.env["XDG_STATE_HOME"] = str(self.bin / "state")
 
     def tearDown(self):
@@ -101,11 +106,22 @@ class ProviderTest(unittest.TestCase):
         rows = self.run_provider("configuration")
         self.assertEqual([row["label"] for row in rows], ["Open config file", "Edit with agent"])
         config_path = str(Path(self.env["HOME"]) / ".config/omarchy/omalaunch/extensions/quantumfire.github.jsonc")
-        self.assertEqual(rows[0]["command"], ["omarchy-launch-editor", config_path])
-        self.assertEqual(rows[1]["command"][:2], ["omarchy-agent", "--prompt"])
-        self.assertIn(config_path, rows[1]["command"][2])
-        self.assertIn("config.example.jsonc", rows[1]["command"][2])
-        self.assertTrue(all(row["closeOnSuccess"] for row in rows))
+        self.assertEqual(rows[0]["command"], [str(PROVIDER), "open-config"])
+        self.assertEqual(rows[1]["command"], [str(PROVIDER), "edit-config-agent"])
+        self.assertTrue(all(row["closeOnDispatch"] for row in rows))
+
+        self.run_provider("open-config")
+        config = Path(config_path)
+        self.assertTrue(config.is_file())
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        self.assertIn('"version": 1', config.read_text())
+        self.assertEqual((self.bin / "launch.log").read_text().strip(), config_path)
+
+        self.run_provider("edit-config-agent")
+        launch = (self.bin / "launch.log").read_text()
+        self.assertIn("--prompt", launch)
+        self.assertIn(config_path, launch)
+        self.assertIn("config.example.jsonc", launch)
 
     def test_repository_drills_into_lists_and_overview(self):
         rows = self.run_provider("repository", "acme/widgets")

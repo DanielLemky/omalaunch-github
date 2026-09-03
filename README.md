@@ -36,7 +36,7 @@ The optional configuration file is:
 ~/.config/omarchy/omalaunch/extensions/quantumfire.github.jsonc
 ```
 
-The GitHub root menu includes **Configuration**. **Open config file** opens this path with the default Omarchy editor. **Edit with agent** starts the default Omarchy coding agent with the path and schema example in its prompt.
+The GitHub root menu includes **Configuration**. If the file is missing, either action first creates it from the bundled example with private permissions. **Open config file** opens it with the default Omarchy editor. **Edit with agent** starts the default Omarchy coding agent with the path and schema example in its prompt. Both actions close Omalaunch as soon as the editor or agent starts.
 
 JSONC comments and trailing commas are accepted. See [`config.example.jsonc`](config.example.jsonc) for the complete version-1 structure. By default, global search contains at most ten recently updated repositories owned by the authenticated user. Issues, pull requests, and notifications remain available in their GitHub menus but are excluded from global search.
 

@@ -472,18 +472,47 @@ def root_menu():
     return rows
 
 
-def configuration_menu():
-    example_path = os.path.abspath(os.path.join(os.path.dirname(SELF), "..", "config.example.jsonc"))
+def config_example_path():
+    return os.path.abspath(os.path.join(os.path.dirname(SELF), "..", "config.example.jsonc"))
+
+
+def ensure_config_file():
+    if os.path.exists(CONFIG_PATH):
+        return
+    os.makedirs(os.path.dirname(CONFIG_PATH), mode=0o700, exist_ok=True)
+    with open(config_example_path(), "rb") as source:
+        content = source.read()
+    try:
+        descriptor = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "wb") as target:
+        target.write(content)
+        target.flush()
+        os.fsync(target.fileno())
+
+
+def open_config_with_editor():
+    ensure_config_file()
+    os.execvp("omarchy-launch-editor", ["omarchy-launch-editor", CONFIG_PATH])
+
+
+def edit_config_with_agent():
+    ensure_config_file()
     prompt = (
         f"Edit the Omalaunch GitHub plugin configuration at {CONFIG_PATH}. "
-        f"Use {example_path} as the schema example. Create the configuration file if it is missing. "
-        "Preserve JSONC syntax, use version 1, and change only the settings requested by the user."
+        f"Use {config_example_path()} as the schema example. Preserve JSONC syntax, use version 1, "
+        "and change only the settings requested by the user."
     )
+    os.execvp("omarchy-agent", ["omarchy-agent", "--prompt", prompt])
+
+
+def configuration_menu():
     return [
         {"id": "open-config", "label": "Open config file", "icon": "󰈙",
-         "command": ["omarchy-launch-editor", CONFIG_PATH], "closeOnSuccess": True},
+         "command": [SELF, "open-config"], "closeOnDispatch": True},
         {"id": "edit-config-agent", "label": "Edit with agent", "icon": "󰚩",
-         "command": ["omarchy-agent", "--prompt", prompt], "closeOnSuccess": True},
+         "command": [SELF, "edit-config-agent"], "closeOnDispatch": True},
     ]
 
 
@@ -800,6 +829,8 @@ def main():
     command = args[0] if args else "menu"
     if command in ("menu", "root"): emit(root_menu())
     elif command == "configuration": emit(configuration_menu())
+    elif command == "open-config": open_config_with_editor()
+    elif command == "edit-config-agent": edit_config_with_agent()
     elif command == "global-search": emit(global_search_menu())
     elif command == "repositories": emit(repositories(80, force))
     elif command == "issues": emit(search_rows("issue", 80, "", force))
