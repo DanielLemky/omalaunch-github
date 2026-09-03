@@ -238,14 +238,29 @@ def issue_document(repo, number):
     })
 
 
+def combined_status(value):
+    if isinstance(value, dict):
+        return compact(value.get("state"), 64).title() or "Unknown"
+    if not isinstance(value, list) or not value:
+        return "Unknown"
+    states = [compact(item.get("state"), 64).lower() for item in value if isinstance(item, dict)]
+    if any(state in ("failure", "error") for state in states):
+        return "Failure"
+    if any(state in ("pending", "queued", "in_progress") for state in states):
+        return "Pending"
+    if states and all(state == "success" for state in states):
+        return "Success"
+    return "Unknown"
+
+
 def pr_document(repo, number):
     item = gh(f"repos/{repo}/pulls/{number}")
-    status = {}
+    statuses = []
     if item.get("statuses_url"):
         try:
-            status = gh(api_path(item["statuses_url"]))
+            statuses = gh(api_path(item["statuses_url"]))
         except SystemExit:
-            status = {}
+            statuses = []
     url = item.get("html_url", "")
     reviewers = ", ".join(user.get("login", "") for user in item.get("requested_reviewers", [])) or "—"
     state = "Draft" if item.get("draft") else ("Merged" if item.get("merged") else compact(item.get("state")).title())
@@ -254,7 +269,7 @@ def pr_document(repo, number):
         "fields": [
             {"label": "Author", "value": compact(item.get("user", {}).get("login"))},
             {"label": "Reviewers", "value": reviewers},
-            {"label": "Checks", "value": compact(status.get("state"), 64).title() or "Unknown"},
+            {"label": "Checks", "value": combined_status(statuses)},
             {"label": "Branches", "value": f"{compact(item.get('head', {}).get('ref'))} → {compact(item.get('base', {}).get('ref'))}"},
             {"label": "Changes", "value": f"+{item.get('additions', 0)} −{item.get('deletions', 0)} in {item.get('changed_files', 0)} files"},
             {"label": "Mergeable", "value": str(item.get("mergeable", "unknown")).title()},

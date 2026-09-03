@@ -36,7 +36,7 @@ elif endpoint == 'repos/acme/widgets': out=repo
 elif endpoint == 'repos/acme/widgets/issues/12': out=issue
 elif endpoint == 'repos/acme/widgets/pulls/13':
     out=dict(pr, requested_reviewers=[{'login':'reviewer'}], statuses_url='https://api.github.com/repos/acme/widgets/commits/abc/status', draft=False, merged=False, head={'ref':'feature'}, base={'ref':'main'}, additions=10, deletions=3, changed_files=2, mergeable=True)
-elif endpoint == 'repos/acme/widgets/commits/abc/status': out={'state':'success'}
+elif endpoint == 'repos/acme/widgets/commits/abc/status': out=[{'state':'success'},{'state':'success'}]
 elif endpoint == 'notifications/threads/99': out=notification
 else:
     print('unexpected endpoint '+endpoint,file=sys.stderr); raise SystemExit(2)
