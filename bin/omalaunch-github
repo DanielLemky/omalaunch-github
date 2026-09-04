@@ -83,6 +83,9 @@ def strip_jsonc(raw):
 
 def config_defaults():
     return {
+        "actionsTopLevel": {"enabled": False, "repositories": [],
+                            "statuses": ["queued", "in_progress", "success", "failure"],
+                            "completedWithinMinutes": 30, "limit": 5},
         "repositories": {"enabled": False, "scope": "owned", "limit": 10, "overrides": {}},
         "issues": {"enabled": False, "limit": 10, "overrides": {}},
         "pullRequests": {"enabled": False, "limit": 10, "overrides": {}},
@@ -121,7 +124,7 @@ def load_config():
             stack.extend((child, level + 1) for child in children if isinstance(child, (dict, list)))
         if not isinstance(value, dict) or value.get("version") != 1:
             raise ValueError("invalid version")
-        allowed_root = {"version", "repositories", "issues", "pullRequests", "notifications", "globalSearch"}
+        allowed_root = {"version", "repositories", "issues", "pullRequests", "notifications", "globalSearch", "actions"}
         if set(value) - allowed_root:
             raise ValueError("unknown root field")
         item_patterns = {
@@ -156,6 +159,38 @@ def load_config():
                 target["scope"] = raw_search["scope"]
             if entity != "notifications" and "overrides" in raw_search:
                 target["overrides"] = validate_overrides(raw_search["overrides"], item_patterns[entity])
+        actions = value.get("actions", {})
+        if not isinstance(actions, dict) or set(actions) - {"topLevel"}:
+            raise ValueError("invalid actions settings")
+        top_level = actions.get("topLevel", {})
+        allowed_top_level = {"enabled", "repositories", "statuses", "completedWithinMinutes", "limit"}
+        if not isinstance(top_level, dict) or set(top_level) - allowed_top_level:
+            raise ValueError("invalid actions.topLevel settings")
+        target = defaults["actionsTopLevel"]
+        if "enabled" in top_level:
+            if not isinstance(top_level["enabled"], bool): raise ValueError("actions.topLevel.enabled must be boolean")
+            target["enabled"] = top_level["enabled"]
+        if "repositories" in top_level:
+            repositories = top_level["repositories"]
+            if (not isinstance(repositories, list) or len(repositories) > 16
+                    or len(set(repositories)) != len(repositories)
+                    or any(not isinstance(repo, str) or not item_patterns["repositories"].fullmatch(repo) for repo in repositories)):
+                raise ValueError("invalid actions.topLevel.repositories")
+            target["repositories"] = list(repositories)
+        if "statuses" in top_level:
+            statuses = top_level["statuses"]
+            allowed_statuses = {"queued", "in_progress", "success", "failure"}
+            if (not isinstance(statuses, list) or not statuses or len(statuses) > 4
+                    or len(set(statuses)) != len(statuses) or any(status not in allowed_statuses for status in statuses)):
+                raise ValueError("invalid actions.topLevel.statuses")
+            target["statuses"] = list(statuses)
+        for field, minimum, maximum in (("completedWithinMinutes", 1, 1440), ("limit", 1, 20)):
+            if field in top_level:
+                number = top_level[field]
+                if isinstance(number, bool) or not isinstance(number, int) or not minimum <= number <= maximum:
+                    raise ValueError(f"actions.topLevel.{field} must be from {minimum} to {maximum}")
+                target[field] = number
+
         global_search = value.get("globalSearch", {})
         if not isinstance(global_search, dict) or set(global_search) - {"excludedRepositories"}:
             raise ValueError("invalid globalSearch settings")
@@ -204,7 +239,7 @@ def cache_write(key, value):
         except FileNotFoundError: pass
 
 
-def cached_gh(key, ttl, endpoint, fields=None, force=False):
+def cached_gh(key, ttl, endpoint, fields=None, force=False, stale_ttl=None):
     if not force:
         cached = cache_read(key, ttl)
         if cached is not None:
@@ -212,7 +247,7 @@ def cached_gh(key, ttl, endpoint, fields=None, force=False):
     try:
         return cache_write(key, gh(endpoint, fields))
     except SystemExit:
-        stale = None if force else cache_read(key, ttl, allow_expired=True)
+        stale = None if force else cache_read(key, stale_ttl or ttl, allow_expired=stale_ttl is None)
         if stale is not None:
             return stale
         raise
@@ -499,7 +534,7 @@ def action_runs(repository, limit=30, force=False):
         branch = compact(run.get("head_branch"), 128)
         event = compact(run.get("event"), 64).replace("_", " ")
         rows.append({
-            "id": f"action-run:{run_id}", "label": title, "icon": "󰑮",
+            "id": f"action-run:{repository}:{run_id}", "label": title, "icon": "󰑮",
             "description": " · ".join(value for value in (branch, event) if value),
             "trailingText": list_date(run.get("updated_at") or run.get("created_at")),
             "badge": label, "badgeTone": tone,
@@ -507,6 +542,74 @@ def action_runs(repository, limit=30, force=False):
                          "refreshCommand": [SELF, "action-run-document", repository, run_id, "--refresh"]},
         })
     return rows
+
+
+def parse_timestamp(value):
+    try:
+        return datetime.fromisoformat(str(value or "").replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def action_runs_row(repository, run):
+    run_id = str(run.get("id", ""))
+    label, tone, _ = status_presentation(run.get("status"), run.get("conclusion"))
+    title = compact(run.get("name") or run.get("display_title") or f"Run {run_id}", 256)
+    branch = compact(run.get("head_branch"), 128)
+    event = compact(run.get("event"), 64).replace("_", " ")
+    return {
+        "id": f"action-run:{repository}:{run_id}", "label": f"{repository} · {title}", "icon": "󰑮",
+        "description": " · ".join(value for value in (branch, event) if value),
+        "trailingText": list_date(run.get("completed_at") or run.get("updated_at") or run.get("created_at")),
+        "badge": label, "badgeTone": tone,
+        "document": {"command": [SELF, "action-run-document", repository, run_id],
+                     "refreshCommand": [SELF, "action-run-document", repository, run_id, "--refresh"]},
+    }
+
+
+def top_level_action_runs(force=False):
+    settings = load_config()["actionsTopLevel"]
+    if not settings["enabled"] or not settings["repositories"]:
+        return []
+    now = datetime.now(timezone.utc)
+    statuses = set(settings["statuses"])
+    candidates = []
+
+    def load(repository):
+        return repository, cached_gh(f"actions:{repository}", 60,
+            f"repos/{repository}/actions/runs", {"per_page": "30"}, force, 120)
+
+    with ThreadPoolExecutor(max_workers=min(4, len(settings["repositories"]))) as pool:
+        results = list(pool.map(load, settings["repositories"]))
+    seen = set()
+    for repository, data in results:
+        for run in data.get("workflow_runs", [])[:30]:
+            run_id = str(run.get("id", ""))
+            identity = f"{repository}:{run_id}"
+            if not run_id or identity in seen:
+                continue
+            status = compact(run.get("status"), 32).lower()
+            conclusion = compact(run.get("conclusion"), 32).lower()
+            active = status in ("queued", "in_progress")
+            selected_status = status if active else conclusion
+            if selected_status not in statuses:
+                continue
+            completed = parse_timestamp(run.get("completed_at") or run.get("updated_at"))
+            if not active and (not completed or (now - completed).total_seconds() > settings["completedWithinMinutes"] * 60):
+                continue
+            seen.add(identity)
+            row = action_runs_row(repository, run)
+            row["topLevel"] = True
+            row["globalSearch"] = False
+            candidates.append((0 if active else 1, 0 if conclusion == "failure" else 1,
+                               -(completed or now).timestamp(), repository, run_id, row))
+    candidates.sort(key=lambda item: item[:-1])
+    return [item[-1] for item in candidates[:settings["limit"]]]
+
+
+def preload_menu(force=False):
+    return {"items": [], "globalSearchItems": global_search_menu(),
+            "topLevelItems": top_level_action_runs(force)}
 
 
 def category(identifier, label, command, icon=""):
@@ -915,6 +1018,7 @@ def main():
     elif command == "open-config": open_config_with_editor()
     elif command == "edit-config-agent": edit_config_with_agent()
     elif command == "global-search": emit(global_search_menu())
+    elif command == "preload": emit(preload_menu(force))
     elif command == "repositories": emit(repositories(80, force))
     elif command == "issues": emit(search_rows("issue", 80, "", force))
     elif command == "pull-requests": emit(search_rows("pr", 80, "", force))

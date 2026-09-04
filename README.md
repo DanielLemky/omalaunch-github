@@ -4,7 +4,7 @@ An external [Omalaunch](https://github.com/daniel-lemky/omalaunch) menu extensio
 
 It keeps repositories, issues, pull requests, and notifications out of global search by default. They remain available in the GitHub menu and can be enabled through configuration. Repository, issue, pull request, and notification lists include their latest update date. On-demand submenus and structured documents keep the root response small. Repository menus show open issue, open pull request, and unread notification counts. Their Actions submenu shows recent workflow runs with semantic status badges and job details. Repository documents show project data. Issue, pull request, and notification documents show metadata, safe host-rendered Markdown body text, copyable code blocks, and Open and Copy URL actions. Pull request details also show individual check runs and their combined result.
 
-The provider is read-only except for the explicit **Mark as read** notification action and its local shortcut-star state. Press Ctrl+S on repositories, general menu items, or repository menu items to add or remove top-level Omalaunch shortcuts. Repository shortcuts include the repository name, such as `acme/widgets · Actions`.
+The provider is read-only except for the explicit **Mark as read** notification action and its local shortcut-star state. Press Ctrl+S on repositories, general menu items, or repository menu items to add or remove permanent top-level Omalaunch shortcuts. Repository shortcuts include the repository name, such as `acme/widgets · Actions`. Optional recent Actions runs are temporary top-level rows. They do not change or use these manual stars.
 
 ## Requirements
 
@@ -40,7 +40,11 @@ The GitHub root menu includes **Configuration**. If the file is missing, either 
 
 JSONC comments and trailing commas are accepted. See [`config.example.jsonc`](config.example.jsonc) for the complete version-1 structure. By default, GitHub data is excluded from global search. Repositories, issues, pull requests, and notifications remain available in their GitHub menus. Users can enable repository search with an `owned` or `visible` scope, or enable exact items through overrides.
 
-Each repository can be enabled or disabled through `repositories.globalSearch.overrides`. Issues and pull requests use exact `owner/repository#number` overrides. `globalSearch.excludedRepositories` removes a repository and its work items unless an exact item override enables one. Configuration affects global search only; it does not remove rows from GitHub menus. Invalid, oversized, over-depth, or unknown configuration is ignored and the safe defaults remain active. The Configuration menu shows a bounded error row that opens an invalid file for repair.
+Each repository can be enabled or disabled through `repositories.globalSearch.overrides`. Issues and pull requests use exact `owner/repository#number` overrides. `globalSearch.excludedRepositories` removes a repository and its work items unless an exact item override enables one.
+
+`actions.topLevel` is disabled by default. When enabled, it checks only its explicit `repositories` list. It never scans the account. `statuses` accepts `queued`, `in_progress`, `success`, and `failure`. Active selected runs stay visible while active. Completed runs stay visible for `completedWithinMinutes`, up to the global `limit`. The provider uses `completed_at` when GitHub supplies it and otherwise uses `updated_at` as the completion-time fallback. Active runs sort first. Recent failures sort before other completions. Repository and run ID break ties. Global search can stay disabled for all entities; this does not prevent temporary rows.
+
+Invalid, oversized, over-depth, or unknown configuration is ignored and the safe defaults remain active. The Configuration menu shows a bounded error row that opens an invalid file for repair.
 
 ## Provider interface
 
@@ -48,7 +52,7 @@ Each repository can be enabled or disabled through `repositories.globalSearch.ov
 
 All `gh` calls use direct subprocess argument arrays, a request timeout, and no shell. Errors go to stderr and return a nonzero status. Each menu response has at most 100 rows.
 
-The provider keeps list results for 60 seconds and detail documents for 30 seconds under the Omalaunch extension state directory. If a normal navigation request fails, the provider uses an expired but valid cache entry when one exists; explicit Ctrl+R refresh failures remain visible. Global-search preload requests only the entity groups enabled by configuration. With the default configuration, it makes no GitHub request. Opening a repository warms its issue, pull request, and notification lists while it loads their counts. Ctrl+R uses the declared live refresh command and bypasses the cache. Actions lists are limited to 30 recent runs.
+The provider keeps list results for 60 seconds and detail documents for 30 seconds under the Omalaunch extension state directory. If a normal navigation request fails, the provider uses an expired but valid cache entry when one exists; explicit Ctrl+R refresh failures remain visible. Omalaunch polls enabled temporary top-level data every 60 seconds without overlapping requests. Actions preload accepts cached API data for at most 120 seconds after a network or authentication failure. The host then expires the old temporary snapshot, so old completed or active rows do not remain indefinitely. Preload requests only enabled global-search groups and explicit top-level repositories. With the default configuration, it makes no GitHub request. Opening a repository warms its issue, pull request, and notification lists while it loads their counts. Ctrl+R on Actions lists and run details uses the declared live refresh command and bypasses the cache. Actions lists are limited to 30 recent runs.
 
 ## Test
 

@@ -1,6 +1,18 @@
 {
   "version": 1,
 
+  "actions": {
+    "topLevel": {
+      "enabled": false,
+      "repositories": [
+        // "owner/project"
+      ],
+      "statuses": ["queued", "in_progress", "success", "failure"],
+      "completedWithinMinutes": 30,
+      "limit": 5
+    }
+  },
+
   "repositories": {
     "globalSearch": {
       "enabled": false,

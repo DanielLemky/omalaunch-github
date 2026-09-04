@@ -41,7 +41,8 @@ elif endpoint == 'repos/acme/widgets/pulls/13':
     out=dict(pr, requested_reviewers=[{'login':'reviewer'}], statuses_url='https://api.github.com/repos/acme/widgets/commits/abc/status', draft=False, merged=False, head={'ref':'feature','sha':'abc'}, base={'ref':'main'}, additions=10, deletions=3, changed_files=2, mergeable=True)
 elif endpoint == 'repos/acme/widgets/commits/abc/status': out=[{'state':'success'},{'state':'success'}]
 elif endpoint == 'repos/acme/widgets/commits/abc/check-runs': out={'check_runs':[{'name':'Tests','status':'completed','conclusion':'success'},{'name':'Build','status':'completed','conclusion':'failure'}]}
-elif endpoint == 'repos/acme/widgets/actions/runs': out={'workflow_runs':[{'id':77,'name':'CI','display_title':'Improve widget','head_branch':'feature','head_sha':'abc','event':'pull_request','status':'completed','conclusion':'failure','updated_at':'2026-01-02T00:00:00Z'}]}
+elif endpoint.endswith('/actions/runs'):
+    out=json.loads(os.environ['GH_RUNS_JSON']) if os.environ.get('GH_RUNS_JSON') else {'workflow_runs':[{'id':77,'name':'CI','display_title':'Improve widget','head_branch':'feature','head_sha':'abc','event':'pull_request','status':'completed','conclusion':'failure','updated_at':'2026-01-02T00:00:00Z'}]}
 elif endpoint == 'repos/acme/widgets/actions/runs/77': out={'id':77,'name':'CI','run_number':9,'head_branch':'feature','head_sha':'abc','event':'pull_request','status':'completed','conclusion':'failure','actor':{'login':'octo'},'created_at':'2026-01-02T00:00:00Z','updated_at':'2026-01-02T00:01:00Z','html_url':'https://github.com/acme/widgets/actions/runs/77'}
 elif endpoint == 'repos/acme/widgets/actions/runs/77/jobs': out={'jobs':[{'name':'Tests','status':'completed','conclusion':'success','started_at':'2026-01-02T00:00:00Z','completed_at':'2026-01-02T00:00:30Z'},{'name':'Build','status':'completed','conclusion':'failure'}]}
 elif endpoint == 'notifications/threads/99': out=notification
@@ -305,6 +306,41 @@ class ProviderTest(unittest.TestCase):
         repo = self.run_provider("repository", "acme/widgets")
         actions = next(row for row in repo if row["label"] == "Actions")
         self.assertTrue(actions["starred"])
+
+    def test_top_level_actions_are_disabled_without_api_requests(self):
+        snapshot = self.run_provider("preload")
+        self.assertEqual(snapshot["topLevelItems"], [])
+        self.assertEqual(snapshot["globalSearchItems"], [])
+        self.assertFalse(self.call_log.exists())
+
+    def test_top_level_actions_filter_order_deduplicate_and_route(self):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        recent = (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+        old = (now - timedelta(minutes=60)).isoformat().replace("+00:00", "Z")
+        runs = {"workflow_runs": [
+            {"id": 1, "name": "Active", "status": "in_progress", "updated_at": old},
+            {"id": 2, "name": "Failed", "status": "completed", "conclusion": "failure", "completed_at": recent},
+            {"id": 2, "name": "Duplicate", "status": "completed", "conclusion": "failure", "completed_at": recent},
+            {"id": 3, "name": "Old success", "status": "completed", "conclusion": "success", "completed_at": old},
+        ]}
+        self.env["GH_RUNS_JSON"] = json.dumps(runs)
+        self.write_config('''{"version":1,"actions":{"topLevel":{"enabled":true,
+          "repositories":["acme/widgets"],"statuses":["in_progress","success","failure"],
+          "completedWithinMinutes":30,"limit":5}}}''')
+        snapshot = self.run_provider("preload")
+        rows = snapshot["topLevelItems"]
+        self.assertEqual([row["label"] for row in rows], ["acme/widgets · Active", "acme/widgets · Failed"])
+        self.assertEqual(len({row["id"] for row in rows}), 2)
+        self.assertTrue(all(row["topLevel"] and row["globalSearch"] is False for row in rows))
+        self.assertEqual(rows[0]["document"]["command"][-2:], ["acme/widgets", "1"])
+
+    def test_top_level_config_bounds_are_rejected(self):
+        self.write_config('{"version":1,"actions":{"topLevel":{"enabled":true,"repositories":[],"limit":21}}}')
+        result = subprocess.run([str(PROVIDER), "preload"], env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["topLevelItems"], [])
+        self.assertIn("actions.topLevel.limit", result.stderr)
 
     def test_action_runs_show_semantic_status_and_job_details(self):
         rows = self.run_provider("repo-actions", "acme/widgets")
