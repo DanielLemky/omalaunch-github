@@ -21,7 +21,7 @@ STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~
 CONFIG_PATH = os.path.join(os.path.expanduser("~/.config"), "omarchy", "omalaunch", "extensions",
                            "quantumfire.github.jsonc")
 CACHE_DIR = os.path.join(os.path.dirname(STATE_PATH), "quantumfire.github-cache")
-STAR_KEY = re.compile(r"^(?:general:(?:repositories|issues|pull-requests|notifications)|repo:[^:]+/[^:]+:(?:overview|issues|pull-requests|notifications|actions))$")
+STAR_KEY = re.compile(r"^(?:general:(?:repositories|issues|pull-requests|notifications)|repository:[^:]+/[^:]+|repo:[^:]+/[^:]+:(?:overview|issues|pull-requests|notifications|actions))$")
 CONFIG_ERROR = ""
 
 
@@ -410,7 +410,7 @@ def repo_name_from_url(url):
 
 def repo_row(repo):
     name = repo.get("full_name", "")
-    return {
+    row = {
         "id": f"repo:{name}", "label": name, "icon": "󰊢",
         "trailingText": list_date(repo.get("updated_at")),
         "description": compact(repo.get("description") or "Repository"),
@@ -419,6 +419,7 @@ def repo_row(repo):
         "submenu": {"command": [SELF, "repository", name],
                     "refreshCommand": [SELF, "repository", name, "--refresh"]},
     }
+    return starrable(row, f"repository:{name}", name)
 
 
 def issue_row(item, kind=None):
@@ -699,10 +700,13 @@ def starred_shortcuts():
             row["globalSearch"] = True
             rows.append(row)
     for key in sorted(load_stars()):
-        if not key.startswith("repo:"):
+        if key.startswith("repository:"):
+            row = repo_row({"full_name": key[len("repository:"):]})
+        elif key.startswith("repo:"):
+            repository, section = key[5:].rsplit(":", 1)
+            row = repository_shortcut(repository, section)
+        else:
             continue
-        repository, section = key[5:].rsplit(":", 1)
-        row = repository_shortcut(repository, section)
         row["globalSearch"] = True
         rows.append(row)
     return rows

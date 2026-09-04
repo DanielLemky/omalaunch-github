@@ -4,7 +4,7 @@ An external [Omalaunch](https://github.com/daniel-lemky/omalaunch) menu extensio
 
 It keeps repositories, issues, pull requests, and notifications out of global search by default. They remain available in the GitHub menu and can be enabled through configuration. Repository, issue, pull request, and notification lists include their latest update date. On-demand submenus and structured documents keep the root response small. Repository menus show open issue, open pull request, and unread notification counts. Their Actions submenu shows recent workflow runs with semantic status badges and job details. Repository documents show project data. Issue, pull request, and notification documents show metadata, safe host-rendered Markdown body text, copyable code blocks, and Open and Copy URL actions. Pull request details also show individual check runs and their combined result.
 
-The provider is read-only except for the explicit **Mark as read** notification action and its local shortcut-star state. Press Ctrl+S on general or repository menu items to add or remove top-level Omalaunch shortcuts. Repository shortcuts include the repository name, such as `acme/widgets · Actions`.
+The provider is read-only except for the explicit **Mark as read** notification action and its local shortcut-star state. Press Ctrl+S on repositories, general menu items, or repository menu items to add or remove top-level Omalaunch shortcuts. Repository shortcuts include the repository name, such as `acme/widgets · Actions`.
 
 ## Requirements
 

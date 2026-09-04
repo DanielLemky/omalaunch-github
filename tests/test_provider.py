@@ -185,7 +185,7 @@ class ProviderTest(unittest.TestCase):
         }''')
         rows = self.run_provider("global-search")
         self.assertEqual(len(rows), 1)
-        self.assertTrue(rows[0]["id"].startswith("repo:"))
+        self.assertTrue(rows[0]["id"].startswith("repository:"))
 
     def test_config_enables_exact_work_items_and_excludes_repository_defaults(self):
         self.write_config('''{
@@ -286,7 +286,11 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(state_path.read_text(), previous)
 
     def test_general_and_repository_shortcuts_publish_distinct_starred_labels(self):
+        repository_rows = self.run_provider("repositories")
+        self.assertEqual(repository_rows[0]["starAction"], "star")
+        self.assertEqual(repository_rows[0]["starredLabel"], "acme/widgets")
         self.run_provider("set-star", "general:issues", "true")
+        self.run_provider("set-star", "repository:acme/widgets", "true")
         self.run_provider("set-star", "repo:acme/widgets:actions", "true")
         root = self.run_provider("root")
         issues = next(row for row in root if row["label"] == "Issues")
@@ -294,7 +298,10 @@ class ProviderTest(unittest.TestCase):
         search = self.run_provider("global-search")
         labels = [row["starredLabel"] for row in search if row.get("starred")]
         self.assertIn("GitHub · Issues", labels)
+        self.assertIn("acme/widgets", labels)
         self.assertIn("acme/widgets · Actions", labels)
+        starred_repository = next(row for row in search if row.get("starredLabel") == "acme/widgets")
+        self.assertIn("submenu", starred_repository)
         repo = self.run_provider("repository", "acme/widgets")
         actions = next(row for row in repo if row["label"] == "Actions")
         self.assertTrue(actions["starred"])
