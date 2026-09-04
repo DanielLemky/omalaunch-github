@@ -40,7 +40,7 @@ The GitHub root menu includes **Configuration**. If the file is missing, either 
 
 JSONC comments and trailing commas are accepted. See [`config.example.jsonc`](config.example.jsonc) for the complete version-1 structure. By default, GitHub data is excluded from global search. Repositories, issues, pull requests, and notifications remain available in their GitHub menus. Users can enable repository search with an `owned` or `visible` scope, or enable exact items through overrides.
 
-Each repository can be enabled or disabled through `repositories.globalSearch.overrides`. Issues and pull requests use exact `owner/repository#number` overrides. `globalSearch.excludedRepositories` removes a repository and its work items unless an exact item override enables one. Configuration affects global search only; it does not remove rows from GitHub menus. Invalid, oversized, over-depth, or unknown configuration is ignored and the safe defaults remain active.
+Each repository can be enabled or disabled through `repositories.globalSearch.overrides`. Issues and pull requests use exact `owner/repository#number` overrides. `globalSearch.excludedRepositories` removes a repository and its work items unless an exact item override enables one. Configuration affects global search only; it does not remove rows from GitHub menus. Invalid, oversized, over-depth, or unknown configuration is ignored and the safe defaults remain active. The Configuration menu shows a bounded error row that opens an invalid file for repair.
 
 ## Provider interface
 
@@ -48,7 +48,7 @@ Each repository can be enabled or disabled through `repositories.globalSearch.ov
 
 All `gh` calls use direct subprocess argument arrays, a request timeout, and no shell. Errors go to stderr and return a nonzero status. Each menu response has at most 100 rows.
 
-The provider keeps list results for 60 seconds and detail documents for 30 seconds under the Omalaunch extension state directory. Global-search preload warms the general repository, issue, pull request, and notification lists. Opening a repository warms its issue, pull request, and notification lists while it loads their counts. Ctrl+R uses the declared live refresh command and bypasses the cache. Actions lists are limited to 30 recent runs.
+The provider keeps list results for 60 seconds and detail documents for 30 seconds under the Omalaunch extension state directory. If a normal navigation request fails, the provider uses an expired but valid cache entry when one exists; explicit Ctrl+R refresh failures remain visible. Global-search preload warms the general repository, issue, pull request, and notification lists. Opening a repository warms its issue, pull request, and notification lists while it loads their counts. Ctrl+R uses the declared live refresh command and bypasses the cache. Actions lists are limited to 30 recent runs.
 
 ## Test
 

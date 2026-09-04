@@ -128,6 +128,14 @@ class ProviderTest(unittest.TestCase):
         self.assertIn("ask what they want to change", launch)
         self.assertIn("Do not change the configuration until the user provides follow-up instructions", launch)
 
+    def test_configuration_menu_reports_invalid_config(self):
+        self.write_config('{"version":1,"unknown":true}')
+        rows = self.run_provider("configuration")
+        self.assertEqual(rows[0]["label"], "Invalid configuration")
+        self.assertEqual(rows[0]["badgeTone"], "danger")
+        self.assertIn("unknown root field", rows[0]["description"])
+        self.assertEqual(rows[0]["command"], [str(PROVIDER), "open-config"])
+
     def test_repository_drills_into_lists_and_overview(self):
         rows = self.run_provider("repository", "acme/widgets")
         self.assertEqual([row["label"] for row in rows[:5]],
@@ -248,6 +256,37 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(cache_file.read_bytes(), previous)
         self.run_provider("repositories")
         self.assertEqual(self.call_log.read_text().splitlines().count("GET user/repos"), 1)
+
+    def test_expired_cache_is_used_when_normal_refresh_fails(self):
+        expected = self.run_provider("repositories")
+        cache_file = self.cache_files()[0]
+        os.utime(cache_file, (0, 0))
+        result = subprocess.run([str(PROVIDER), "repositories"], env=dict(self.env, GH_FAIL="1"),
+                                text=True, capture_output=True, timeout=8)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), expected)
+
+    def test_star_updates_are_locked_and_invalid_state_is_not_overwritten(self):
+        commands = [
+            [str(PROVIDER), "set-star", "general:issues", "true"],
+            [str(PROVIDER), "set-star", "general:notifications", "true"],
+        ]
+        processes = [subprocess.Popen(command, env=self.env, text=True, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE) for command in commands]
+        for process in processes:
+            _, error = process.communicate(timeout=8)
+            self.assertEqual(process.returncode, 0, error)
+        state_path = Path(self.env["XDG_STATE_HOME"]) / "omarchy/omalaunch/extensions/quantumfire.github.json"
+        state = json.loads(state_path.read_text())
+        self.assertEqual(set(state["stars"]), {"general:issues", "general:notifications"})
+        self.assertEqual(state_path.stat().st_mode & 0o777, 0o600)
+
+        state_path.write_text('{"version":1,"stars":[],"unknown":true}')
+        previous = state_path.read_text()
+        result = subprocess.run([str(PROVIDER), "set-star", "general:issues", "true"], env=self.env,
+                                text=True, capture_output=True, timeout=8)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(state_path.read_text(), previous)
 
     def test_general_and_repository_shortcuts_publish_distinct_starred_labels(self):
         self.run_provider("set-star", "general:issues", "true")

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read GitHub state through gh and emit bounded Omalaunch menu documents."""
 
+import fcntl
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~/.config"), "omarchy", "omalaunc
                            "quantumfire.github.jsonc")
 CACHE_DIR = os.path.join(os.path.dirname(STATE_PATH), "quantumfire.github-cache")
 STAR_KEY = re.compile(r"^(?:general:(?:repositories|issues|pull-requests|notifications)|repo:[^:]+/[^:]+:(?:overview|issues|pull-requests|notifications|actions))$")
+CONFIG_ERROR = ""
 
 
 def strip_jsonc(raw):
@@ -99,6 +101,8 @@ def validate_overrides(value, item_pattern):
 
 
 def load_config():
+    global CONFIG_ERROR
+    CONFIG_ERROR = ""
     defaults = config_defaults()
     try:
         if not os.path.exists(CONFIG_PATH):
@@ -162,18 +166,21 @@ def load_config():
         defaults["excludedRepositories"] = excluded
         return defaults
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        print(f"omalaunch-github: ignored invalid configuration: {error}", file=sys.stderr)
+        CONFIG_ERROR = compact(str(error), 240)
+        print(f"omalaunch-github: ignored invalid configuration: {CONFIG_ERROR}", file=sys.stderr)
         return defaults
 
 
-def cache_read(key, ttl):
+def cache_read(key, ttl, allow_expired=False):
     path = os.path.join(CACHE_DIR, hashlib.sha256(key.encode()).hexdigest() + ".json")
     try:
-        if time.time() - os.path.getmtime(path) > ttl:
+        if not allow_expired and time.time() - os.path.getmtime(path) > ttl:
+            return None
+        if os.path.getsize(path) > 1024 * 1024:
             return None
         with open(path, encoding="utf-8") as cache_file:
             return json.load(cache_file)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
@@ -181,11 +188,20 @@ def cache_write(key, value):
     os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
     path = os.path.join(CACHE_DIR, hashlib.sha256(key.encode()).hexdigest() + ".json")
     temporary = path + f".tmp.{os.getpid()}"
-    with open(temporary, "w", encoding="utf-8") as cache_file:
-        json.dump(value, cache_file, separators=(",", ":"))
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
-    return value
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as cache_file:
+            json.dump(value, cache_file, separators=(",", ":"))
+            cache_file.flush()
+            os.fsync(cache_file.fileno())
+        os.replace(temporary, path)
+        directory = os.open(CACHE_DIR, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+        return value
+    finally:
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
 
 
 def cached_gh(key, ttl, endpoint, fields=None, force=False):
@@ -193,7 +209,13 @@ def cached_gh(key, ttl, endpoint, fields=None, force=False):
         cached = cache_read(key, ttl)
         if cached is not None:
             return cached
-    return cache_write(key, gh(endpoint, fields))
+    try:
+        return cache_write(key, gh(endpoint, fields))
+    except SystemExit:
+        stale = None if force else cache_read(key, ttl, allow_expired=True)
+        if stale is not None:
+            return stale
+        raise
 
 
 def cached_value(key, ttl, force, producer):
@@ -201,7 +223,13 @@ def cached_value(key, ttl, force, producer):
         cached = cache_read(key, ttl)
         if cached is not None:
             return cached
-    return cache_write(key, producer())
+    try:
+        return cache_write(key, producer())
+    except SystemExit:
+        stale = None if force else cache_read(key, ttl, allow_expired=True)
+        if stale is not None:
+            return stale
+        raise
 
 
 def clear_cache():
@@ -213,36 +241,64 @@ def clear_cache():
         pass
 
 
-def load_stars():
+def read_stars(strict=False):
     try:
+        if not os.path.exists(STATE_PATH):
+            return set()
+        if os.path.getsize(STATE_PATH) > 64 * 1024:
+            raise ValueError("state exceeds 64 KiB")
         with open(STATE_PATH, encoding="utf-8") as state_file:
             value = json.load(state_file)
-        stars = value.get("stars", []) if isinstance(value, dict) else []
-        return {item for item in stars if isinstance(item, str) and STAR_KEY.fullmatch(item)}
-    except (OSError, json.JSONDecodeError):
+        if not isinstance(value, dict) or set(value) != {"version", "stars"} or value.get("version") != 1:
+            raise ValueError("invalid star state")
+        stars = value.get("stars")
+        if (not isinstance(stars, list) or len(stars) > 256
+                or any(not isinstance(item, str) or not STAR_KEY.fullmatch(item) for item in stars)
+                or len(set(stars)) != len(stars)):
+            raise ValueError("invalid stars")
+        return set(stars)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        if strict: fail(f"refusing to overwrite invalid star state: {error}")
         return set()
 
 
+def load_stars():
+    return read_stars(False)
+
+
 def save_stars(stars):
-    directory = os.path.dirname(STATE_PATH)
-    os.makedirs(directory, mode=0o700, exist_ok=True)
+    directory_path = os.path.dirname(STATE_PATH)
+    os.makedirs(directory_path, mode=0o700, exist_ok=True)
     temporary = STATE_PATH + f".tmp.{os.getpid()}"
-    with open(temporary, "w", encoding="utf-8") as state_file:
-        json.dump({"version": 1, "stars": sorted(stars)}, state_file, separators=(",", ":"))
-        state_file.write("\n")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, STATE_PATH)
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as state_file:
+            json.dump({"version": 1, "stars": sorted(stars)}, state_file, separators=(",", ":"))
+            state_file.write("\n")
+            state_file.flush()
+            os.fsync(state_file.fileno())
+        os.replace(temporary, STATE_PATH)
+        directory = os.open(directory_path, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+    finally:
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
 
 
 def set_star(key, enabled):
     if not STAR_KEY.fullmatch(key) or enabled not in ("true", "false"):
         fail("invalid star request")
-    stars = load_stars()
-    if enabled == "true":
-        stars.add(key)
-    else:
-        stars.discard(key)
-    save_stars(stars)
+    directory = os.path.dirname(STATE_PATH)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    lock_path = STATE_PATH + ".lock"
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        stars = read_stars(True)
+        if enabled == "true": stars.add(key)
+        else: stars.discard(key)
+        save_stars(stars)
 
 
 def starrable(row, key, starred_label):
@@ -510,12 +566,19 @@ def edit_config_with_agent():
 
 
 def configuration_menu():
-    return [
+    load_config()
+    rows = []
+    if CONFIG_ERROR:
+        rows.append({"id": "invalid-config", "label": "Invalid configuration", "icon": "󰀪",
+                     "description": CONFIG_ERROR, "badge": "Error", "badgeTone": "danger",
+                     "command": [SELF, "open-config"], "closeOnDispatch": True})
+    rows.extend([
         {"id": "open-config", "label": "Open config file", "icon": "󰈙",
          "command": [SELF, "open-config"], "closeOnDispatch": True},
         {"id": "edit-config-agent", "label": "Edit with agent", "icon": "󰚩",
          "command": [SELF, "edit-config-agent"], "closeOnDispatch": True},
-    ]
+    ])
+    return rows
 
 
 def override_visible(key, repository, settings, excluded, default):
