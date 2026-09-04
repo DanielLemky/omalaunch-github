@@ -99,10 +99,7 @@ class ProviderTest(unittest.TestCase):
         self.assertFalse(any(row["id"].startswith("issue:") for row in search_rows))
         self.assertFalse(any(row["id"].startswith("pr:") for row in search_rows))
         self.assertFalse(any(row["id"].startswith("notification:") for row in search_rows))
-        calls = self.call_log.read_text()
-        self.assertIn("GET user/repos", calls)
-        self.assertIn("GET search/issues", calls)
-        self.assertIn("GET notifications", calls)
+        self.assertFalse(self.call_log.exists(), "disabled global search must not call GitHub")
 
     def test_configuration_menu_opens_editor_or_default_agent(self):
         rows = self.run_provider("configuration")

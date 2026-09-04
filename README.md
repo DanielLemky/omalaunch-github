@@ -48,7 +48,7 @@ Each repository can be enabled or disabled through `repositories.globalSearch.ov
 
 All `gh` calls use direct subprocess argument arrays, a request timeout, and no shell. Errors go to stderr and return a nonzero status. Each menu response has at most 100 rows.
 
-The provider keeps list results for 60 seconds and detail documents for 30 seconds under the Omalaunch extension state directory. If a normal navigation request fails, the provider uses an expired but valid cache entry when one exists; explicit Ctrl+R refresh failures remain visible. Global-search preload warms the general repository, issue, pull request, and notification lists. Opening a repository warms its issue, pull request, and notification lists while it loads their counts. Ctrl+R uses the declared live refresh command and bypasses the cache. Actions lists are limited to 30 recent runs.
+The provider keeps list results for 60 seconds and detail documents for 30 seconds under the Omalaunch extension state directory. If a normal navigation request fails, the provider uses an expired but valid cache entry when one exists; explicit Ctrl+R refresh failures remain visible. Global-search preload requests only the entity groups enabled by configuration. With the default configuration, it makes no GitHub request. Opening a repository warms its issue, pull request, and notification lists while it loads their counts. Ctrl+R uses the declared live refresh command and bypasses the cache. Actions lists are limited to 30 recent runs.
 
 ## Test
 

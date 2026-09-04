@@ -594,19 +594,34 @@ def global_search_menu():
     config = load_config()
     excluded = set(config["excludedRepositories"])
     rows = starred_shortcuts()
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        repository_job = pool.submit(repository_data, True)
-        issue_job = pool.submit(search_data, "issue", "", True)
-        pull_job = pool.submit(search_data, "pr", "", True)
-        notification_job = pool.submit(notification_data, "", True)
-        viewer_job = pool.submit(cached_gh, "viewer", 300, "user", None, True)
-        repository_items = repository_job.result()
-        issue_items = issue_job.result().get("items", [])
-        pull_items = pull_job.result().get("items", [])
-        notification_items = notification_job.result()
-        viewer = compact(viewer_job.result().get("login"), 128)
-
     repository_settings = config["repositories"]
+    issue_settings = config["issues"]
+    pull_settings = config["pullRequests"]
+    notification_settings = config["notifications"]
+    repository_items = []
+    issue_items = []
+    pull_items = []
+    notification_items = []
+    viewer = ""
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        jobs = {}
+        if repository_settings["enabled"]:
+            jobs["repositories"] = pool.submit(repository_data, True)
+            if repository_settings["scope"] == "owned":
+                jobs["viewer"] = pool.submit(cached_gh, "viewer", 300, "user", None, True)
+        if issue_settings["enabled"]:
+            jobs["issues"] = pool.submit(search_data, "issue", "", True)
+        if pull_settings["enabled"]:
+            jobs["pullRequests"] = pool.submit(search_data, "pr", "", True)
+        if notification_settings["enabled"]:
+            jobs["notifications"] = pool.submit(notification_data, "", True)
+        if "repositories" in jobs: repository_items = jobs["repositories"].result()
+        if "viewer" in jobs: viewer = compact(jobs["viewer"].result().get("login"), 128)
+        if "issues" in jobs: issue_items = jobs["issues"].result().get("items", [])
+        if "pullRequests" in jobs: pull_items = jobs["pullRequests"].result().get("items", [])
+        if "notifications" in jobs: notification_items = jobs["notifications"].result()
+
+
     included_repositories = []
     seen_repositories = set()
     for item in repository_items:
@@ -644,7 +659,6 @@ def global_search_menu():
             included.append(issue_row(item, kind))
         rows.extend(included)
 
-    notification_settings = config["notifications"]
     if notification_settings["enabled"]:
         rows.extend(notification_row(item) for item in notification_items[:notification_settings["limit"]]
                      if item.get("repository", {}).get("full_name", "") not in excluded)
