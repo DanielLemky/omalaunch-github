@@ -39,6 +39,14 @@ omarchy plugin add https://github.com/DanielLemky/omalaunch-github --enable
 
 Omalaunch reads `manifest.json` and loads `omalaunch.json`. Refresh Omalaunch after installation.
 
+## Removal
+
+Remove the plugin and its Omalaunch extension:
+
+```sh
+omarchy plugin remove quantumfire.omalaunch-github --yes
+```
+
 ## Configuration
 
 The optional configuration file is:
