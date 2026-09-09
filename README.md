@@ -10,13 +10,18 @@ The provider is read-only except for the explicit **Mark as read** notification 
 
 - Omalaunch with dynamic `submenu` and `document` row support
 - Python 3
-- [GitHub CLI](https://cli.github.com/) authenticated for `github.com`: `gh auth login`
+- [GitHub CLI](https://cli.github.com/) (`gh`)
 - `xdg-open`
+- `xdg-terminal-exec`
 - `wl-copy`
 - `omarchy-launch-editor`
 - `omarchy-agent`
 
 GitHub Enterprise Server is not supported in version 1.
+
+If `gh` is missing, Omalaunch keeps the extension visible and offers to install the Arch package `github-cli`. Omalaunch owns this fixed executable-to-package mapping. The plugin manifest cannot select an installation command. Omalaunch shows the exact `omarchy pkg add github-cli` command and requires confirmation before it opens a visible, held terminal. Reopen Omalaunch after the command finishes to recheck the dependency.
+
+If `gh` is installed but is not authenticated for `github.com`, the GitHub root shows **Set up GitHub**. **Sign in to github.com** opens `gh auth login --hostname github.com` in a visible interactive terminal. The setup menu also has **Recheck**. The plugin does not request classic scopes, print or store tokens, or automatically expand permissions after GitHub denies a request. Fine-grained tokens can work when their permissions cover the requested resources. Authentication, permission, rate-limit, and network failures use separate bounded guidance.
 
 ## Install
 

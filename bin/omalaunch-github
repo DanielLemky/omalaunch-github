@@ -355,6 +355,31 @@ def fail(message):
     raise SystemExit(1)
 
 
+def gh_auth_ready():
+    """Check github.com authentication without reading or storing a token."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status", "--hostname", "github.com"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=TIMEOUT)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def safe_gh_error(stderr, returncode):
+    value = str(stderr or "").lower()
+    if "rate limit" in value or "api rate" in value:
+        return "GitHub rate limit reached. Wait, then press Ctrl+R to retry."
+    if any(marker in value for marker in ("resource not accessible", "forbidden", "permission", "scope", "403")):
+        return "GitHub denied this request. Check the token permissions for this resource; Omalaunch will not expand them automatically."
+    if any(marker in value for marker in ("bad credentials", "authentication", "not logged", "401")):
+        return "GitHub authentication is invalid. Open GitHub setup and sign in again."
+    if any(marker in value for marker in ("timeout", "timed out", "connection", "network", "resolve host", "dns")):
+        return "GitHub could not be reached. Check the network, then press Ctrl+R to retry."
+    return f"GitHub CLI request failed (exit {returncode})."
+
+
 def gh(endpoint, fields=None, method="GET"):
     command = ["gh", "api", "--method", method, endpoint]
     for key, value in (fields or {}).items():
@@ -364,7 +389,7 @@ def gh(endpoint, fields=None, method="GET"):
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(str(error))
     if result.returncode != 0:
-        fail(result.stderr.strip() or f"gh exited with {result.returncode}")
+        fail(safe_gh_error(result.stderr, result.returncode))
     if not result.stdout.strip():
         return {}
     try:
@@ -637,8 +662,36 @@ def root_menu():
     ]
     rows = [starrable(category(identifier, label, command, icon), f"general:{identifier}",
                       f"GitHub · {label}") for identifier, label, command, icon in definitions]
+    if not gh_auth_ready():
+        rows.append(category("setup", "Set up GitHub", ["setup"], "󰒓"))
+        rows[-1]["description"] = "Sign in to github.com with GitHub CLI"
+        rows[-1]["badge"] = "Required"
+        rows[-1]["badgeTone"] = "warning"
     rows.append(category("configuration", "Configuration", ["configuration"], "󰒓"))
     return rows
+
+
+def setup_menu():
+    if gh_auth_ready():
+        return [{
+            "id": "ready", "label": "GitHub CLI is authenticated", "icon": "󰄬",
+            "description": "github.com is ready", "badge": "Ready", "badgeTone": "success",
+            "submenu": {"command": [SELF, "root"]},
+        }]
+    return [
+        {
+            "id": "auth-login", "label": "Sign in to github.com", "icon": "󰌆",
+            "description": "Open GitHub CLI sign-in in a visible terminal",
+            "command": ["xdg-terminal-exec", "--hold", "--", "gh", "auth", "login",
+                        "--hostname", "github.com"],
+            "closeOnDispatch": True,
+        },
+        {
+            "id": "recheck-auth", "label": "Recheck", "icon": "󰑓",
+            "description": "Check GitHub CLI authentication again",
+            "submenu": {"command": [SELF, "setup"]},
+        },
+    ]
 
 
 def config_example_path():
@@ -1036,6 +1089,7 @@ def main():
     command = args[0] if args else "menu"
     if command in ("menu", "root"): emit(root_menu())
     elif command == "configuration": emit(configuration_menu())
+    elif command == "setup": emit(setup_menu())
     elif command == "open-config": open_config_with_editor()
     elif command == "edit-config-agent": edit_config_with_agent()
     elif command == "global-search": emit(global_search_menu())

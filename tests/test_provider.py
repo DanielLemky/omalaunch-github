@@ -13,8 +13,14 @@ PROVIDER = ROOT / "bin" / "omalaunch-github"
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys
 args=sys.argv[1:]
+if args[:2] == ['auth', 'status']:
+    if os.environ.get('GH_AUTH_LOG'):
+        with open(os.environ['GH_AUTH_LOG'],'a') as f: f.write('auth status github.com\n')
+    state=os.environ.get('GH_AUTH_STATE','valid')
+    if state == 'valid': raise SystemExit(0)
+    print('not logged into github.com', file=sys.stderr); raise SystemExit(1)
 if os.environ.get('GH_FAIL'):
-    print('authentication required', file=sys.stderr); raise SystemExit(4)
+    print(os.environ.get('GH_FAIL_MESSAGE','authentication required'), file=sys.stderr); raise SystemExit(4)
 method=args[args.index('--method')+1]
 endpoint=args[args.index('--method')+2]
 fields={}
@@ -70,6 +76,7 @@ class ProviderTest(unittest.TestCase):
         self.env["HOME"] = str(self.bin / "home")
         self.env["GH_LOG"] = str(self.log)
         self.env["GH_CALL_LOG"] = str(self.call_log)
+        self.env["GH_AUTH_LOG"] = str(self.bin / "gh-auth.log")
         self.env["LAUNCH_LOG"] = str(self.bin / "launch.log")
         self.env["XDG_STATE_HOME"] = str(self.bin / "state")
 
@@ -108,6 +115,28 @@ class ProviderTest(unittest.TestCase):
         self.assertFalse(any(row["id"].startswith("pr:") for row in search_rows))
         self.assertFalse(any(row["id"].startswith("notification:") for row in search_rows))
         self.assertFalse(self.call_log.exists(), "static shortcuts must not call GitHub")
+
+    def test_unauthenticated_root_offers_bounded_login_and_recheck(self):
+        self.env["GH_AUTH_STATE"] = "missing"
+        rows = self.run_provider("root")
+        setup = next(row for row in rows if row["id"] == "setup")
+        self.assertEqual(setup["badge"], "Required")
+        self.assertFalse(self.call_log.exists(), "authentication onboarding must not call the GitHub API")
+
+        actions = self.run_provider("setup")
+        login = actions[0]
+        self.assertEqual(login["command"], ["xdg-terminal-exec", "--hold", "--", "gh",
+                                                   "auth", "login", "--hostname", "github.com"])
+        self.assertTrue(login["closeOnDispatch"])
+        self.assertEqual(actions[1]["submenu"]["command"], [str(PROVIDER), "setup"])
+        self.assertNotIn("scope", " ".join(login["command"]))
+        self.assertNotIn("token", json.dumps(rows + actions).lower())
+
+        self.env["GH_AUTH_STATE"] = "valid"
+        ready = self.run_provider("setup")
+        self.assertEqual(ready[0]["badge"], "Ready")
+        self.assertNotIn("setup", [row["id"] for row in self.run_provider("root")])
+        self.assertFalse(self.call_log.exists())
 
     def test_configuration_menu_opens_editor_or_default_agent(self):
         rows = self.run_provider("configuration")
@@ -199,7 +228,23 @@ class ProviderTest(unittest.TestCase):
                                 capture_output=True, timeout=8)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
-        self.assertIn("authentication required", result.stderr)
+        self.assertIn("authentication is invalid", result.stderr)
+
+    def test_api_failures_distinguish_auth_network_rate_and_permission_without_secrets(self):
+        cases = (
+            ("Bad credentials token ghp_supersecret", "authentication is invalid"),
+            ("connection timed out", "could not be reached"),
+            ("API rate limit exceeded", "rate limit reached"),
+            ("403 Resource not accessible by personal access token", "denied this request"),
+        )
+        for message, expected in cases:
+            env = dict(self.env, GH_FAIL="1", GH_FAIL_MESSAGE=message)
+            result = subprocess.run([str(PROVIDER), "repositories"], env=env, text=True,
+                                    capture_output=True, timeout=8)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(expected, result.stderr)
+            self.assertNotIn("ghp_supersecret", result.stderr)
+        self.assertIn("will not expand", result.stderr)
 
     def test_notification_rejects_non_github_api_host(self):
         env = self.env.copy()

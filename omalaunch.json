@@ -11,6 +11,6 @@
   "globalSearch": true,
   "topLevel": true,
   "preloadCommand": ["{extensionDir}/bin/omalaunch-github", "preload"],
-  "requires": ["gh", "python3", "xdg-open", "wl-copy", "omarchy-agent", "omarchy-launch-editor"],
+  "requires": ["gh", "python3", "xdg-open", "xdg-terminal-exec", "wl-copy", "omarchy-agent", "omarchy-launch-editor"],
   "command": ["{extensionDir}/bin/omalaunch-github", "root"]
 }
