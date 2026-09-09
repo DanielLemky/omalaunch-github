@@ -67,6 +67,10 @@ elif endpoint == 'repos/acme/widgets/actions/runs/77/jobs': out={'jobs':[{'name'
 elif endpoint == 'notifications/threads/99': out=notification
 else:
     print('unexpected endpoint '+endpoint,file=sys.stderr); raise SystemExit(2)
+if endpoint == os.environ.get('GH_HTML_URL_ENDPOINT') and isinstance(out, dict):
+    out['html_url'] = os.environ.get('GH_HTML_URL', '')
+if os.environ.get('GH_REPOSITORY_HTML_URL') and isinstance(out, dict) and isinstance(out.get('repository'), dict):
+    out['repository']['html_url'] = os.environ['GH_REPOSITORY_HTML_URL']
 json.dump(out,sys.stdout)
 '''
 
@@ -365,6 +369,18 @@ class ProviderTest(unittest.TestCase):
             self.assertNotIn("ghp_supersecret", result.stderr)
         self.assertIn("will not expand", result.stderr)
 
+    def test_combined_401_authentication_error_invalidates_gate_and_cache(self):
+        self.run_provider("repositories")
+        self.assertTrue(self.cache_files())
+        env = dict(self.env, GH_FAIL="1",
+                   GH_FAIL_MESSAGE="HTTP 403 Requires authentication (HTTP 401)")
+        result = subprocess.run([str(PROVIDER), "repositories", "--refresh"], env=env,
+                                text=True, capture_output=True, timeout=8)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("authentication is invalid", result.stderr)
+        self.assertEqual(self.cache_files(), [])
+        self.assertEqual([row["id"] for row in self.run_provider("root")], ["setup"])
+
     def test_local_permission_and_proxy_auth_errors_are_neutral(self):
         for message in ("permission denied opening local keyring", "Proxy Authentication Required"):
             env = dict(self.env, GH_FAIL="1", GH_FAIL_MESSAGE=message)
@@ -382,6 +398,62 @@ class ProviderTest(unittest.TestCase):
                                 text=True, capture_output=True, timeout=8)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported GitHub API host", result.stderr)
+
+    def test_document_actions_reject_unsafe_api_urls_and_use_safe_fallbacks(self):
+        unsafe_urls = (
+            "http://github.com/acme/widgets",
+            "javascript:alert(1)",
+            "https://evil.example/acme/widgets",
+            "https://github.com.evil.example/acme/widgets",
+            "https://user@github.com/acme/widgets",
+            "https://github.com:443/acme/widgets",
+            "https://github.com:8443/acme/widgets",
+        )
+        entities = (
+            ("repos/acme/widgets", ("repo-document", "acme/widgets"),
+             "https://github.com/acme/widgets"),
+            ("repos/acme/widgets/issues/12", ("issue-document", "acme/widgets", "12"),
+             "https://github.com/acme/widgets/issues/12"),
+            ("repos/acme/widgets/pulls/13", ("pr-document", "acme/widgets", "13"),
+             "https://github.com/acme/widgets/pull/13"),
+            ("repos/acme/widgets/actions/runs/77", ("action-run-document", "acme/widgets", "77"),
+             "https://github.com/acme/widgets/actions/runs/77"),
+        )
+        for endpoint, command, fallback in entities:
+            for unsafe in unsafe_urls:
+                self.env["GH_HTML_URL_ENDPOINT"] = endpoint
+                self.env["GH_HTML_URL"] = unsafe
+                document = self.run_provider(*command)
+                argv = [argument for action in document["actions"] for argument in action["command"]]
+                self.assertNotIn(unsafe, argv)
+                self.assertIn(fallback, argv)
+        self.env.pop("GH_HTML_URL_ENDPOINT")
+        self.env.pop("GH_HTML_URL")
+
+        for unsafe in unsafe_urls:
+            self.env["GH_HTML_URL_ENDPOINT"] = "repos/acme/widgets/pulls/13"
+            self.env["GH_HTML_URL"] = unsafe
+            self.env["GH_REPOSITORY_HTML_URL"] = unsafe
+            document = self.run_provider("notification-document", "99")
+            argv = [argument for action in document["actions"] for argument in action["command"]]
+            self.assertNotIn(unsafe, argv)
+            self.assertIn("https://github.com/acme/widgets", argv)
+
+    def test_document_actions_preserve_valid_github_urls_with_fragments(self):
+        url = "https://github.com/acme/widgets/issues/12#issuecomment-1"
+        self.env["GH_HTML_URL_ENDPOINT"] = "repos/acme/widgets/issues/12"
+        self.env["GH_HTML_URL"] = url
+        document = self.run_provider("issue-document", "acme/widgets", "12")
+        self.assertTrue(all(url in action["command"] for action in document["actions"]))
+
+    def test_generated_repository_urls_are_validated(self):
+        namespace = runpy.run_path(str(PROVIDER))
+        self.assertEqual(namespace["github_repo_url"]("evil.example/path"),
+                         "https://github.com/evil.example/path")
+        self.assertEqual(namespace["github_repo_url"]("owner/repo", "issues", "12#fragment"),
+                         "https://github.com/owner/repo/issues/12%23fragment")
+        self.assertEqual(namespace["github_repo_url"]("owner/repo/extra"), "")
+        self.assertEqual(namespace["github_repo_url"]("/repo"), "")
 
     def test_config_can_enable_repository_global_search(self):
         self.write_config('''{

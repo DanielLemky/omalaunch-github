@@ -4,6 +4,7 @@
   "name": "Omalaunch: GitHub",
   "version": "1.0.0",
   "author": "Daniel Lemky",
+  "license": "MIT",
   "description": "Browse GitHub repositories, work, and notifications in Omalaunch",
   "kinds": ["extension"],
   "entryPoints": {},

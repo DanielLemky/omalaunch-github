@@ -12,7 +12,7 @@ import time
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 LIMIT = 24
 TIMEOUT = 4
@@ -439,10 +439,12 @@ def safe_gh_error(stderr, returncode):
     value = str(stderr or "").lower()
     if any(marker in value for marker in ("api rate limit exceeded", "secondary rate limit", "http 429", "status 429")):
         return "GitHub rate limit reached. Wait, then press Ctrl+R to retry."
-    if any(marker in value for marker in ("resource not accessible by", "http 403", "status 403", "insufficient scope", "requires authentication")):
-        return "GitHub denied this request. Check the token permissions for this resource; Omalaunch will not expand them automatically."
-    if any(marker in value for marker in ("bad credentials", "http 401", "status 401")):
+    if any(marker in value for marker in (
+            "bad credentials", "http 401", "status 401", "requires authentication")):
         return "GitHub authentication is invalid. Open GitHub setup to review the configured credential."
+    if any(marker in value for marker in (
+            "resource not accessible by", "http 403", "status 403", "insufficient scope")):
+        return "GitHub denied this request. Check the token permissions for this resource; Omalaunch will not expand them automatically."
     if any(marker in value for marker in ("connection timed out", "could not resolve host", "temporary failure in name resolution", "network is unreachable")):
         return "GitHub could not be reached. Check the network, then press Ctrl+R to retry."
     return f"GitHub CLI request failed (exit {returncode})."
@@ -516,12 +518,51 @@ def date(value):
         return compact(value, 64)
 
 
+def github_web_url(value):
+    """Return a GitHub.com HTTPS URL, or an empty string for an unsafe URL."""
+    try:
+        parsed = urlparse(str(value or ""))
+        if (parsed.scheme.lower() != "https" or parsed.hostname != "github.com"
+                or parsed.username is not None or parsed.password is not None
+                or parsed.netloc.lower() != "github.com"):
+            return ""
+        # Reading port also rejects malformed port syntax. Any explicit port is rejected above.
+        parsed.port
+    except ValueError:
+        return ""
+    return str(value)
+
+
+def github_repo_url(repository, *parts):
+    segments = str(repository or "").split("/")
+    if len(segments) != 2 or not all(segments):
+        return ""
+    path = "/".join(quote(segment, safe="") for segment in segments)
+    if parts:
+        path += "/" + "/".join(quote(str(part), safe="") for part in parts)
+    return github_web_url(f"https://github.com/{path}")
+
+
+def preferred_github_url(candidate, fallback=""):
+    return github_web_url(candidate) or github_web_url(fallback)
+
+
 def action_open(url):
-    return {"id": "open", "label": "Open on GitHub", "command": ["xdg-open", url], "closeOnSuccess": True}
+    safe_url = github_web_url(url)
+    if not safe_url:
+        raise ValueError("unsafe GitHub URL")
+    return {"id": "open", "label": "Open on GitHub", "icon": "󰖟", "command": ["xdg-open", safe_url], "closeOnSuccess": True}
 
 
 def action_copy(url):
-    return {"id": "copy-url", "label": "Copy URL", "command": ["wl-copy", "--", url]}
+    safe_url = github_web_url(url)
+    if not safe_url:
+        raise ValueError("unsafe GitHub URL")
+    return {"id": "copy-url", "label": "Copy URL", "icon": "󰆏", "command": ["wl-copy", "--", safe_url]}
+
+
+def url_actions(url):
+    return [action_open(url), action_copy(url)] if url else []
 
 
 def status_presentation(status, conclusion=""):
@@ -985,7 +1026,7 @@ def starred_shortcuts():
 
 
 def repository_menu(name, force=False):
-    url = f"https://github.com/{name}"
+    url = github_repo_url(name)
     issue_count, pull_count, notification_count = repository_counts(name, force)
     overview = repository_shortcut(name, "overview")
     issues = repository_shortcut(name, "issues")
@@ -997,9 +1038,7 @@ def repository_menu(name, force=False):
     actions = repository_shortcut(name, "actions")
     return [
         overview, issues, pulls, repo_notifications, actions,
-        {"id": "open", "label": "Open on GitHub", "icon": "󰖟", "command": ["xdg-open", url], "closeOnSuccess": True},
-        {"id": "copy-url", "label": "Copy URL", "icon": "󰆏", "command": ["wl-copy", "--", url]},
-    ]
+    ] + url_actions(url)
 
 
 def emit(value):
@@ -1009,7 +1048,7 @@ def emit(value):
 
 def repo_document(name):
     item = gh(f"repos/{name}")
-    url = item.get("html_url") or f"https://github.com/{name}"
+    url = preferred_github_url(item.get("html_url"), github_repo_url(item.get("full_name") or name))
     topics = [compact(topic, 64) for topic in item.get("topics", []) if compact(topic, 64)]
     sections = [{"heading": "Topics", "text": "  ·  ".join(topics)}] if topics else []
     return {
@@ -1027,13 +1066,13 @@ def repo_document(name):
             {"label": "Default branch", "value": compact(item.get("default_branch"))},
             {"label": "Updated", "value": date(item.get("updated_at"))},
         ],
-        "sections": sections, "actions": [action_open(url), action_copy(url)],
+        "sections": sections, "actions": url_actions(url),
     }
 
 
 def issue_document(repo, number):
     item = gh(f"repos/{repo}/issues/{number}")
-    url = item.get("html_url", "")
+    url = preferred_github_url(item.get("html_url"), github_repo_url(repo, "issues", number))
     labels = ", ".join(label.get("name", "") for label in item.get("labels", [])) or "—"
     assignees = ", ".join(user.get("login", "") for user in item.get("assignees", [])) or "—"
     return {
@@ -1047,7 +1086,7 @@ def issue_document(repo, number):
             {"label": "Updated", "value": date(item.get("updated_at"))},
         ],
         "sections": [{"heading": "Description", "text": (item.get("body") or "No description.")[:32768], "format": "markdown"}],
-        "actions": [action_open(url), action_copy(url)],
+        "actions": url_actions(url),
     }
 
 
@@ -1092,7 +1131,7 @@ def pr_document(repo, number):
     for run, presentation in zip(check_runs, presentations):
         label, _, marker = presentation
         check_lines.append(f"- {marker} {compact(run.get('name') or 'Check', 180)} — {label}")
-    url = item.get("html_url", "")
+    url = preferred_github_url(item.get("html_url"), github_repo_url(repo, "pull", number))
     reviewers = ", ".join(user.get("login", "") for user in item.get("requested_reviewers", [])) or "—"
     state = "Draft" if item.get("draft") else ("Merged" if item.get("merged") else compact(item.get("state")).title())
     sections = []
@@ -1112,7 +1151,7 @@ def pr_document(repo, number):
             {"label": "Updated", "value": date(item.get("updated_at"))},
         ],
         "sections": sections,
-        "actions": [action_open(url), action_copy(url)],
+        "actions": url_actions(url),
     }
 
 
@@ -1123,8 +1162,10 @@ def notification_document(thread):
     if subject.get("url"):
         related = gh(api_path(subject["url"]))
     repo = (item.get("repository") or {}).get("full_name", "")
-    url = related.get("html_url") or (item.get("repository") or {}).get("html_url") or f"https://github.com/{repo}"
-    actions = [action_open(url), action_copy(url), {
+    url = preferred_github_url(related.get("html_url"),
+                               preferred_github_url((item.get("repository") or {}).get("html_url"),
+                                                    github_repo_url(repo)))
+    actions = url_actions(url) + [{
         "id": "mark-read", "label": "Mark as read", "command": [SELF, "mark-read", thread]
     }]
     return {
@@ -1157,7 +1198,7 @@ def action_run_document(repo, run_id):
             except ValueError:
                 duration = ""
         job_lines.append(f"- {marker} {compact(job.get('name') or 'Job', 180)} — {job_label}{duration}")
-    url = run.get("html_url") or f"https://github.com/{repo}/actions/runs/{run_id}"
+    url = preferred_github_url(run.get("html_url"), github_repo_url(repo, "actions", "runs", run_id))
     actor = run.get("actor") or run.get("triggering_actor") or {}
     return {
         "title": run.get("name") or run.get("display_title") or f"Workflow run {run_id}",
@@ -1172,7 +1213,7 @@ def action_run_document(repo, run_id):
         ],
         "sections": [{"heading": "Jobs", "text": "\n".join(job_lines) if job_lines else "No jobs are available.",
                       "format": "markdown"}],
-        "actions": [action_open(url), action_copy(url)],
+        "actions": url_actions(url),
     }
 
 
