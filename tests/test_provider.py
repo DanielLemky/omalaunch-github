@@ -96,11 +96,18 @@ class ProviderTest(unittest.TestCase):
         self.assertNotIn("starAction", rows[4])
         self.assertTrue(all(row["submenu"]["refreshCommand"][-1] == "--refresh" for row in rows))
         search_rows = self.run_provider("global-search")
-        self.assertEqual(search_rows, [])
+        self.assertEqual([row["id"] for row in search_rows], [
+            "general:repositories", "general:issues", "general:pull-requests", "general:notifications"])
+        self.assertEqual([row["label"] for row in search_rows], [
+            "GitHub · Repositories", "GitHub · Issues", "GitHub · Pull Requests", "GitHub · Notifications"])
+        self.assertIn("repos", search_rows[0]["aliases"])
+        self.assertIn("prs", search_rows[2]["aliases"])
+        self.assertNotIn("general:configuration", [row["id"] for row in search_rows])
+        self.assertTrue(all(not row["starred"] for row in search_rows))
         self.assertFalse(any(row["id"].startswith("issue:") for row in search_rows))
         self.assertFalse(any(row["id"].startswith("pr:") for row in search_rows))
         self.assertFalse(any(row["id"].startswith("notification:") for row in search_rows))
-        self.assertFalse(self.call_log.exists(), "disabled global search must not call GitHub")
+        self.assertFalse(self.call_log.exists(), "static shortcuts must not call GitHub")
 
     def test_configuration_menu_opens_editor_or_default_agent(self):
         rows = self.run_provider("configuration")
@@ -185,8 +192,8 @@ class ProviderTest(unittest.TestCase):
           "repositories": {"globalSearch": {"enabled": true, "scope": "owned", "limit": 10}}
         }''')
         rows = self.run_provider("global-search")
-        self.assertEqual(len(rows), 1)
-        self.assertTrue(rows[0]["id"].startswith("repository:"))
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(any(row["id"].startswith("repository:") for row in rows))
 
     def test_config_enables_exact_work_items_and_excludes_repository_defaults(self):
         self.write_config('''{
@@ -211,7 +218,9 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("ignored invalid configuration", result.stderr)
         rows = json.loads(result.stdout)
-        self.assertEqual(rows, [])
+        self.assertEqual([row["id"] for row in rows], [
+            "general:repositories", "general:issues", "general:pull-requests", "general:notifications"])
+        self.assertFalse(self.call_log.exists())
 
     def cache_files(self):
         cache = Path(self.env["XDG_STATE_HOME"]) / "omarchy/omalaunch/extensions/quantumfire.github-cache"
@@ -297,6 +306,7 @@ class ProviderTest(unittest.TestCase):
         issues = next(row for row in root if row["label"] == "Issues")
         self.assertTrue(issues["starred"])
         search = self.run_provider("global-search")
+        self.assertEqual(len(search), len({row["id"] for row in search}))
         labels = [row["starredLabel"] for row in search if row.get("starred")]
         self.assertIn("GitHub · Issues", labels)
         self.assertIn("acme/widgets", labels)
@@ -310,7 +320,8 @@ class ProviderTest(unittest.TestCase):
     def test_top_level_actions_are_disabled_without_api_requests(self):
         snapshot = self.run_provider("preload")
         self.assertEqual(snapshot["topLevelItems"], [])
-        self.assertEqual(snapshot["globalSearchItems"], [])
+        self.assertEqual([row["id"] for row in snapshot["globalSearchItems"]], [
+            "general:repositories", "general:issues", "general:pull-requests", "general:notifications"])
         self.assertFalse(self.call_log.exists())
 
     def test_top_level_actions_filter_order_deduplicate_and_route(self):

@@ -697,7 +697,7 @@ def override_visible(key, repository, settings, excluded, default):
 def global_search_menu():
     config = load_config()
     excluded = set(config["excludedRepositories"])
-    rows = starred_shortcuts()
+    rows = global_root_shortcuts() + starred_shortcuts()
     repository_settings = config["repositories"]
     issue_settings = config["issues"]
     pull_settings = config["pullRequests"]
@@ -796,12 +796,24 @@ def repository_shortcut(name, section):
     return starrable(row, f"repo:{name}:{section}", f"{name} · {label}")
 
 
+def global_root_shortcuts():
+    aliases = {
+        "general:repositories": ["repository", "repositories", "repo", "repos"],
+        "general:issues": ["issue", "issues"],
+        "general:pull-requests": ["pull request", "pull requests", "pr", "prs"],
+        "general:notifications": ["notification", "notifications"],
+    }
+    rows = []
+    for row in root_menu()[:4]:
+        row["label"] = row["starredLabel"]
+        row["aliases"] = aliases[row["id"]]
+        row["globalSearch"] = True
+        rows.append(row)
+    return rows
+
+
 def starred_shortcuts():
     rows = []
-    for row in root_menu():
-        if row.get("starred", False):
-            row["globalSearch"] = True
-            rows.append(row)
     for key in sorted(load_stars()):
         if key.startswith("repository:"):
             row = repo_row({"full_name": key[len("repository:"):]})
