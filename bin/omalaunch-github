@@ -457,16 +457,20 @@ def repo_row(repo):
     return starrable(row, f"repository:{name}", name)
 
 
-def issue_row(item, kind=None):
+def issue_row(item, kind=None, show_repository=True):
     is_pr = bool(item.get("pull_request")) if kind is None else kind == "pr"
     repo = repo_name_from_url(item.get("repository_url")) or item.get("repository", {}).get("full_name", "")
     number = str(item.get("number", ""))
     label = compact(item.get("title"), 256)
     prefix = "pr" if is_pr else "issue"
+    author = compact(item.get("user", {}).get("login"))
+    metadata = [f"#{number}", author]
+    if show_repository:
+        metadata.insert(0, repo)
     return {
         "id": f"{prefix}:{repo}#{number}", "label": label,
         "icon": "󰘬" if is_pr else "󰅚", "trailingText": list_date(item.get("updated_at")),
-        "description": f"{repo} #{number} · {compact(item.get('user', {}).get('login'))}",
+        "description": " · ".join(value for value in metadata if value),
         "aliases": [repo, f"#{number}", "pull request" if is_pr else "issue"],
         "context": {"repository": repo, "number": number},
         "document": {"command": [SELF, f"{prefix}-document", repo, number],
@@ -474,14 +478,17 @@ def issue_row(item, kind=None):
     }
 
 
-def notification_row(item):
+def notification_row(item, show_repository=True):
     subject = item.get("subject") or {}
     repo = (item.get("repository") or {}).get("full_name", "")
     thread = str(item.get("id", ""))
+    metadata = [compact(item.get("reason")), compact(subject.get("type"))]
+    if show_repository:
+        metadata.insert(0, repo)
     return {
         "id": f"notification:{thread}", "label": compact(subject.get("title"), 256), "icon": "󰂚",
         "trailingText": list_date(item.get("updated_at")),
-        "description": f"{repo} · {compact(item.get('reason'))} · {compact(subject.get('type'))}",
+        "description": " · ".join(value for value in metadata if value),
         "aliases": [repo, item.get("reason") or "", subject.get("type") or "", "notification"],
         "context": {"thread": thread},
         "document": {"command": [SELF, "notification-document", thread],
@@ -509,7 +516,8 @@ def search_data(kind, repository="", force=False):
 
 
 def search_rows(kind, limit=LIMIT, repository="", force=False):
-    return [issue_row(item, kind) for item in search_data(kind, repository, force).get("items", [])][:limit]
+    return [issue_row(item, kind, not repository)
+            for item in search_data(kind, repository, force).get("items", [])][:limit]
 
 
 def notification_data(repository="", force=False):
@@ -520,7 +528,8 @@ def notification_data(repository="", force=False):
 
 
 def notifications(limit=LIMIT, repository="", force=False):
-    return [notification_row(item) for item in notification_data(repository, force)][:limit]
+    return [notification_row(item, not repository)
+            for item in notification_data(repository, force)][:limit]
 
 
 def action_runs(repository, limit=30, force=False):

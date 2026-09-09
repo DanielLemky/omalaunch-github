@@ -156,6 +156,29 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual([stat["label"] for stat in document["stats"]], ["Stars", "Forks", "Open issues"])
         self.assertEqual(len(document["actions"]), 2)
 
+    def test_combined_work_lists_show_repository_first_and_keep_dates(self):
+        for command, expected_id, expected_detail in (
+                ("issues", "issue:acme/widgets#12", "#12"),
+                ("pull-requests", "pr:acme/widgets#13", "#13"),
+                ("notifications", "notification:99", "review_requested")):
+            row = self.run_provider(command)[0]
+            self.assertEqual(row["id"], expected_id)
+            self.assertTrue(row["description"].startswith("acme/widgets · "))
+            self.assertIn(expected_detail, row["description"])
+            self.assertTrue(row["trailingText"])
+
+    def test_repository_work_lists_do_not_repeat_repository(self):
+        for command, expected_id, expected_detail in (
+                ("repo-issues", "issue:acme/widgets#12", "#12"),
+                ("repo-pull-requests", "pr:acme/widgets#13", "#13"),
+                ("repo-notifications", "notification:99", "review_requested")):
+            row = self.run_provider(command, "acme/widgets")[0]
+            self.assertEqual(row["id"], expected_id)
+            self.assertNotIn("acme/widgets", row["description"])
+            self.assertIn(expected_detail, row["description"])
+            self.assertTrue(row["trailingText"])
+            self.assertIn("document", row)
+
     def test_issue_and_pr_documents_include_details(self):
         issue = self.run_provider("issue-document", "acme/widgets", "12")
         self.assertEqual(issue["status"], "Open")
