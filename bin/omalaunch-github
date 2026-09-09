@@ -269,10 +269,11 @@ def cached_value(key, ttl, force, producer):
         raise
 
 
-def clear_cache():
+def clear_cache(preserve_auth=False):
+    auth_name = hashlib.sha256("auth-verification".encode()).hexdigest() + ".json"
     try:
         for name in os.listdir(CACHE_DIR):
-            if name.endswith(".json"):
+            if name.endswith(".json") and not (preserve_auth and name == auth_name):
                 os.unlink(os.path.join(CACHE_DIR, name))
     except OSError:
         pass
@@ -380,11 +381,14 @@ def auth_state():
     source = gh_credential_source()
     if not source:
         return "missing", source
-    cached = cache_read("auth-verification", AUTH_TTL)
-    if (isinstance(cached, dict) and cached.get("source") == source
-            and cached.get("state") in ("verified", "invalid", "transient")):
-        return cached["state"], source
-    return "pending", source
+    cached = cache_read("auth-verification", AUTH_TTL, allow_expired=True)
+    if isinstance(cached, dict) and cached.get("source") == source:
+        if cached.get("state") == "invalid":
+            return "invalid", source
+        if (cached.get("state") == "verified"
+                and time.time() - cached.get("checked", 0) <= AUTH_TTL):
+            return "verified", source
+    return "configured", source
 
 
 def gh_auth_verify(source):
@@ -414,9 +418,7 @@ def gh_auth_verify(source):
 def setup_root(state):
     descriptions = {
         "missing": "Configure a github.com credential with GitHub CLI",
-        "pending": "A configured credential must be verified before GitHub data is shown",
         "invalid": "The configured GitHub credential is invalid",
-        "transient": "GitHub authentication could not be verified; recheck when the service is reachable",
     }
     row = category("setup", "Set up GitHub", ["setup"], "󰒓")
     row["description"] = descriptions[state]
@@ -425,9 +427,9 @@ def setup_root(state):
     return [row]
 
 
-def require_verified():
+def require_ready():
     state, _ = auth_state()
-    if state != "verified":
+    if state in ("missing", "invalid"):
         emit(setup_root(state))
         return False
     return True
@@ -462,6 +464,7 @@ def gh(endpoint, fields=None, method="GET"):
             source = gh_credential_source()
             if source:
                 write_auth_state("invalid", source)
+                clear_cache(preserve_auth=True)
         fail(error)
     if not result.stdout.strip():
         return {}
@@ -716,7 +719,7 @@ def top_level_action_runs(force=False):
 
 def preload_menu(force=False):
     state, _ = auth_state()
-    if state != "verified":
+    if state in ("missing", "invalid"):
         return {"items": [], "globalSearchItems": setup_root(state), "topLevelItems": []}
     return {"items": [], "globalSearchItems": global_search_menu(),
             "topLevelItems": top_level_action_runs(force)}
@@ -731,7 +734,7 @@ def category(identifier, label, command, icon=""):
 
 def root_menu():
     state, _ = auth_state()
-    if state != "verified":
+    if state in ("missing", "invalid"):
         return setup_root(state)
     definitions = [
         ("repositories", "Repositories", ["repositories"], "󰊢"),
@@ -749,21 +752,20 @@ def setup_menu(verify=False):
     state, source = auth_state()
     if verify and source:
         state = gh_auth_verify(source)
-    if state == "verified":
+        if state == "transient":
+            state = "configured"
+    if state in ("verified", "configured"):
+        verified = state == "verified"
         return [{
-            "id": "ready", "label": "Active GitHub account is verified", "icon": "󰄬",
-            "description": "github.com is ready", "badge": "Ready", "badgeTone": "success",
+            "id": "ready", "label": "Active GitHub account is verified" if verified else "GitHub credential is configured",
+            "icon": "󰄬", "description": "github.com is verified" if verified else "github.com is ready to use; verification occurs when GitHub data is requested",
+            "badge": "Verified" if verified else "Ready", "badgeTone": "success",
             "submenu": {"command": [SELF, "root"]},
         }]
     rows = []
     if source:
         if state == "invalid":
             description = "The active github.com credential is invalid."
-        elif state == "transient":
-            description = "Verification did not complete because GitHub CLI or the network was unavailable."
-        else:
-            description = "A credential is configured but is not verified."
-
         if source == "environment":
             description += " If it is invalid, correct or remove GH_TOKEN or GITHUB_TOKEN in the launcher environment; signing in cannot replace that override."
         rows.append({"id": "credential", "label": "GitHub credential is configured", "icon": "󰌆",
@@ -848,7 +850,7 @@ def override_visible(key, repository, settings, excluded, default):
 
 def global_search_menu():
     state, _ = auth_state()
-    if state != "verified":
+    if state in ("missing", "invalid"):
         return setup_root(state)
     config = load_config()
     excluded = set(config["excludedRepositories"])
@@ -1184,11 +1186,11 @@ def main():
     elif command == "setup": emit(setup_menu(force))
     elif command == "preload": emit(preload_menu(force))
     elif command == "global-search": emit(global_search_menu())
-    elif command in ("configuration", "open-config", "edit-config-agent") and not require_verified(): return
+    elif command in ("configuration", "open-config", "edit-config-agent") and not require_ready(): return
     elif command == "configuration": emit(configuration_menu())
     elif command == "open-config": open_config_with_editor()
     elif command == "edit-config-agent": edit_config_with_agent()
-    elif command not in ("set-star",) and not require_verified(): return
+    elif command not in ("set-star",) and not require_ready(): return
     elif command == "repositories": emit(repositories(80, force))
     elif command == "issues": emit(search_rows("issue", 80, "", force))
     elif command == "pull-requests": emit(search_rows("pr", 80, "", force))

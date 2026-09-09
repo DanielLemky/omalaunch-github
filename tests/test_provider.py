@@ -154,20 +154,23 @@ class ProviderTest(unittest.TestCase):
 
         self.env["GH_AUTH_STATE"] = "valid"
         ready = self.run_provider("setup", "--refresh")
-        self.assertEqual(ready[0]["badge"], "Ready")
+        self.assertEqual(ready[0]["badge"], "Verified")
         self.assertIn("--active", auth_log.read_text())
         self.assertNotIn("setup", [row["id"] for row in self.run_provider("root")])
         self.assertFalse(self.call_log.exists())
 
-    def test_env_token_root_is_local_and_setup_explains_override(self):
+    def test_env_token_root_is_locally_ready_without_status_or_api(self):
         self.env["GH_TOKEN"] = "never-print-this"
         rows = self.run_provider("root")
-        self.assertEqual([row["id"] for row in rows], ["setup"])
-        self.assertIn("must be verified", rows[0]["description"])
+        self.assertEqual([row["id"] for row in rows], [
+            "general:repositories", "general:issues", "general:pull-requests",
+            "general:notifications", "configuration"])
         self.assertFalse(Path(self.env["GH_AUTH_LOG"]).exists())
+        self.assertFalse(self.call_log.exists())
         setup = self.run_provider("setup")
-        self.assertIn("launcher environment", setup[0]["description"])
-        self.assertIn("cannot replace", setup[0]["description"])
+        self.assertEqual(setup[0]["label"], "GitHub credential is configured")
+        self.assertIn("ready to use", setup[0]["description"])
+        self.assertNotIn("verified", setup[0]["label"].lower())
         self.assertNotIn("never-print-this", json.dumps(setup))
 
     def test_stored_credential_root_does_not_run_network_status(self):
@@ -198,14 +201,21 @@ class ProviderTest(unittest.TestCase):
         self.env["GH_AUTH_STATE"] = "valid"
         self.env["GH_MULTI_ACCOUNT"] = "1"
         ready = self.run_provider("setup", "--refresh")
-        self.assertEqual(ready[0]["badge"], "Ready")
+        self.assertEqual(ready[0]["badge"], "Verified")
         self.assertIn("auth status --hostname github.com --active",
                       Path(self.env["GH_AUTH_LOG"]).read_text())
 
-    def test_pending_invalid_and_expired_auth_show_only_setup_without_api_requests(self):
-        self.env["GH_TOKEN"] = "configured-not-yet-verified"
+    def test_invalid_gates_until_recheck_and_source_change_restores_ready(self):
+        self.env["GH_TOKEN"] = "configured-token"
         self.write_config('{"version":1,"repositories":{"globalSearch":{"enabled":true}},'
                           '"actions":{"topLevel":{"enabled":true,"repositories":["acme/widgets"]}}}')
+        self.assertNotIn("setup", [row["id"] for row in self.run_provider("root")])
+        self.assertFalse(self.call_log.exists())
+
+        env = dict(self.env, GH_FAIL="1", GH_FAIL_MESSAGE="Bad credentials")
+        result = subprocess.run([str(PROVIDER), "repositories"], env=env, text=True,
+                                capture_output=True, timeout=8)
+        self.assertNotEqual(result.returncode, 0)
         for command in ("root", "global-search"):
             self.assertEqual([row["id"] for row in self.run_provider(command)], ["setup"])
         preload = self.run_provider("preload")
@@ -213,28 +223,30 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(preload["topLevelItems"], [])
         self.assertFalse(self.call_log.exists())
 
-        self.env["GH_AUTH_STATE"] = "invalid"
-        setup = self.run_provider("setup", "--refresh")
-        self.assertIn("invalid", setup[0]["description"])
-        self.assertEqual([row["id"] for row in self.run_provider("root")], ["setup"])
-        self.assertFalse(self.call_log.exists())
-
+        self.env.pop("GH_TOKEN")
+        self.assertNotIn("setup", [row["id"] for row in self.run_provider("root")])
+        self.env["GH_TOKEN"] = "configured-token"
         self.env["GH_AUTH_STATE"] = "valid"
-        self.assertEqual(self.run_provider("setup", "--refresh")[0]["badge"], "Ready")
-        self.assertIn("general:repositories", [row["id"] for row in self.run_provider("root")])
+        self.assertEqual(self.run_provider("setup", "--refresh")[0]["badge"], "Verified")
+        self.assertNotIn("setup", [row["id"] for row in self.run_provider("root")])
+
+    def test_expired_verified_cache_falls_back_to_configured_ready(self):
         cache_file = self.auth_cache_file()
-        os.utime(cache_file, (0, 0))
-        self.assertEqual([row["id"] for row in self.run_provider("root")], ["setup"])
+        value = json.loads(cache_file.read_text())
+        value["checked"] = 0
+        cache_file.write_text(json.dumps(value))
+        self.assertNotIn("setup", [row["id"] for row in self.run_provider("root")])
         self.assertFalse(self.call_log.exists())
 
-    def test_transient_recheck_is_setup_only_and_preserves_stars(self):
+    def test_transient_recheck_keeps_ready_and_preserves_stars(self):
         self.run_provider("set-star", "general:issues", "true")
         state_path = Path(self.env["XDG_STATE_HOME"]) / "omarchy/omalaunch/extensions/quantumfire.github.json"
         before = state_path.read_bytes()
         self.env["GH_AUTH_STATE"] = "transient"
         setup = self.run_provider("setup", "--refresh")
-        self.assertIn("network was unavailable", setup[0]["description"])
-        self.assertEqual([row["id"] for row in self.run_provider("root")], ["setup"])
+        self.assertEqual(setup[0]["badge"], "Ready")
+        self.assertIn("ready to use", setup[0]["description"])
+        self.assertNotIn("setup", [row["id"] for row in self.run_provider("root")])
         self.assertEqual(state_path.read_bytes(), before)
         self.assertNotIn("test-secret", json.dumps(setup))
 
