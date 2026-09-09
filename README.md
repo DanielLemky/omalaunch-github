@@ -2,6 +2,8 @@
 
 An external [Omalaunch](https://github.com/daniel-lemky/omalaunch) menu extension for GitHub.
 
+![GitHub menu in Omalaunch](assets/omalaunch-github-menu.png)
+
 Global search always includes static shortcuts for **GitHub · Repositories**, **GitHub · Issues**, **GitHub · Pull Requests**, and **GitHub · Notifications**. The shortcuts need no GitHub request and accept aliases such as `repos` and `prs`. They stay out of the top-level view unless the user manually stars them. Individual repository, issue, pull request, and notification results remain disabled by default and can be enabled through configuration. Their lists include the latest update date. On-demand submenus and structured documents keep the root response small. Repository menus show open issue, open pull request, and unread notification counts. Their Actions submenu shows recent workflow runs with semantic status badges and job details. Repository documents show project data. Issue, pull request, and notification documents show metadata, safe host-rendered Markdown body text, copyable code blocks, and Open and Copy URL actions. Pull request details also show individual check runs and their combined result.
 
 The provider is read-only except for the explicit **Mark as read** notification action and its local shortcut-star state. Press Ctrl+S on repositories, general menu items, or repository menu items to add or remove permanent top-level Omalaunch shortcuts. Repository shortcuts include the repository name, such as `acme/widgets · Actions`. Optional recent Actions runs are temporary top-level rows. They do not change or use these manual stars.
