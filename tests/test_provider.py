@@ -1,11 +1,13 @@
 import json
 import os
+import runpy
 import stat
 import subprocess
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 PROVIDER = ROOT / "bin" / "omalaunch-github"
@@ -17,7 +19,11 @@ if args[:2] == ['auth', 'token']:
     if os.environ.get('GH_AUTH_LOG'):
         with open(os.environ['GH_AUTH_LOG'],'a') as f: f.write(' '.join(args)+'\n')
     if os.environ.get('GH_AUTH_STATE','valid') == 'missing': raise SystemExit(1)
-    print('test-secret'); raise SystemExit(0)
+    if os.environ.get('GH_TOKEN_EXCESSIVE_OUTPUT'):
+        sys.stdout.write('test-secret' * 1_000_000)
+    else:
+        print('test-secret')
+    raise SystemExit(0)
 if args[:2] == ['auth', 'status']:
     if os.environ.get('GH_AUTH_LOG'):
         with open(os.environ['GH_AUTH_LOG'],'a') as f: f.write(' '.join(args)+'\n')
@@ -164,6 +170,23 @@ class ProviderTest(unittest.TestCase):
         log = Path(self.env["GH_AUTH_LOG"]).read_text()
         self.assertIn("auth token --hostname github.com", log)
         self.assertNotIn("auth status", log)
+
+    def test_stored_credential_discards_excessive_token_output(self):
+        self.env["GH_TOKEN_EXCESSIVE_OUTPUT"] = "1"
+        rows = self.run_provider("root")
+        self.assertNotIn("setup", [row["id"] for row in rows])
+
+        namespace = runpy.run_path(str(PROVIDER))
+        completed = subprocess.CompletedProcess([], 0)
+        clean_env = {key: value for key, value in os.environ.items()
+                     if key not in ("GH_TOKEN", "GITHUB_TOKEN")}
+        with mock.patch.dict(os.environ, clean_env, clear=True), \
+                mock.patch("subprocess.run", return_value=completed) as run:
+            self.assertEqual(namespace["gh_credential_source"](), "stored")
+        run.assert_called_once_with(
+            ["gh", "auth", "token", "--hostname", "github.com"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=1)
 
     def test_recheck_uses_active_account_even_with_inactive_stale_account(self):
         self.env["GH_AUTH_STATE"] = "valid"

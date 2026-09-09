@@ -362,9 +362,9 @@ def gh_credential_source():
     try:
         result = subprocess.run(
             ["gh", "auth", "token", "--hostname", "github.com"],
-            check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=1)
-        return "stored" if result.returncode == 0 and bool(result.stdout.strip()) else ""
+        return "stored" if result.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
