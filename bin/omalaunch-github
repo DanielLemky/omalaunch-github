@@ -355,11 +355,25 @@ def fail(message):
     raise SystemExit(1)
 
 
-def gh_auth_ready():
-    """Check github.com authentication without reading or storing a token."""
+def gh_credential_source():
+    """Find a configured credential locally. Never return the credential value."""
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        return "environment"
     try:
         result = subprocess.run(
-            ["gh", "auth", "status", "--hostname", "github.com"],
+            ["gh", "auth", "token", "--hostname", "github.com"],
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=1)
+        return "stored" if result.returncode == 0 and bool(result.stdout.strip()) else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def gh_auth_active():
+    """Actively verify only the active github.com account."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status", "--hostname", "github.com", "--active"],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=TIMEOUT)
         return result.returncode == 0
@@ -369,13 +383,13 @@ def gh_auth_ready():
 
 def safe_gh_error(stderr, returncode):
     value = str(stderr or "").lower()
-    if "rate limit" in value or "api rate" in value:
+    if any(marker in value for marker in ("api rate limit exceeded", "secondary rate limit", "http 429", "status 429")):
         return "GitHub rate limit reached. Wait, then press Ctrl+R to retry."
-    if any(marker in value for marker in ("resource not accessible", "forbidden", "permission", "scope", "403")):
+    if any(marker in value for marker in ("resource not accessible by", "http 403", "status 403", "insufficient scope", "requires authentication")):
         return "GitHub denied this request. Check the token permissions for this resource; Omalaunch will not expand them automatically."
-    if any(marker in value for marker in ("bad credentials", "authentication", "not logged", "401")):
-        return "GitHub authentication is invalid. Open GitHub setup and sign in again."
-    if any(marker in value for marker in ("timeout", "timed out", "connection", "network", "resolve host", "dns")):
+    if any(marker in value for marker in ("bad credentials", "http 401", "status 401")):
+        return "GitHub authentication is invalid. Open GitHub setup to review the configured credential."
+    if any(marker in value for marker in ("connection timed out", "could not resolve host", "temporary failure in name resolution", "network is unreachable")):
         return "GitHub could not be reached. Check the network, then press Ctrl+R to retry."
     return f"GitHub CLI request failed (exit {returncode})."
 
@@ -386,8 +400,10 @@ def gh(endpoint, fields=None, method="GET"):
         command += ["-f", f"{key}={value}"]
     try:
         result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        fail(str(error))
+    except subprocess.TimeoutExpired:
+        fail("GitHub could not be reached. Check the network, then press Ctrl+R to retry.")
+    except OSError:
+        fail("GitHub CLI request could not start.")
     if result.returncode != 0:
         fail(safe_gh_error(result.stderr, result.returncode))
     if not result.stdout.strip():
@@ -662,36 +678,44 @@ def root_menu():
     ]
     rows = [starrable(category(identifier, label, command, icon), f"general:{identifier}",
                       f"GitHub · {label}") for identifier, label, command, icon in definitions]
-    if not gh_auth_ready():
+    if not gh_credential_source():
         rows.append(category("setup", "Set up GitHub", ["setup"], "󰒓"))
-        rows[-1]["description"] = "Sign in to github.com with GitHub CLI"
+        rows[-1]["description"] = "Configure a github.com credential with GitHub CLI"
         rows[-1]["badge"] = "Required"
         rows[-1]["badgeTone"] = "warning"
     rows.append(category("configuration", "Configuration", ["configuration"], "󰒓"))
     return rows
 
 
-def setup_menu():
-    if gh_auth_ready():
+def setup_menu(verify=False):
+    source = gh_credential_source()
+    if verify and gh_auth_active():
         return [{
-            "id": "ready", "label": "GitHub CLI is authenticated", "icon": "󰄬",
+            "id": "ready", "label": "Active GitHub account is verified", "icon": "󰄬",
             "description": "github.com is ready", "badge": "Ready", "badgeTone": "success",
             "submenu": {"command": [SELF, "root"]},
         }]
-    return [
-        {
+    rows = []
+    if source:
+        description = "A credential is configured but is not verified."
+        if source == "environment":
+            description += " If it is invalid, correct or remove GH_TOKEN or GITHUB_TOKEN in the launcher environment; signing in cannot replace that override."
+        rows.append({"id": "credential", "label": "GitHub credential is configured", "icon": "󰌆",
+                     "description": description, "badge": "Check", "badgeTone": "warning"})
+    else:
+        rows.append({
             "id": "auth-login", "label": "Sign in to github.com", "icon": "󰌆",
-            "description": "Open GitHub CLI sign-in in a visible terminal",
-            "command": ["xdg-terminal-exec", "--hold", "--", "gh", "auth", "login",
-                        "--hostname", "github.com"],
+            "description": "Open GitHub CLI sign-in without token environment overrides",
+            "command": ["xdg-terminal-exec", "--hold", "--", "env", "-u", "GH_TOKEN", "-u", "GITHUB_TOKEN",
+                        "gh", "auth", "login", "--hostname", "github.com"],
             "closeOnDispatch": True,
-        },
-        {
-            "id": "recheck-auth", "label": "Recheck", "icon": "󰑓",
-            "description": "Check GitHub CLI authentication again",
-            "submenu": {"command": [SELF, "setup"]},
-        },
-    ]
+        })
+    rows.append({
+        "id": "recheck-auth", "label": "Recheck", "icon": "󰑓",
+        "description": "Verify the active GitHub CLI account",
+        "submenu": {"command": [SELF, "setup", "--refresh"]},
+    })
+    return rows
 
 
 def config_example_path():
@@ -1089,7 +1113,7 @@ def main():
     command = args[0] if args else "menu"
     if command in ("menu", "root"): emit(root_menu())
     elif command == "configuration": emit(configuration_menu())
-    elif command == "setup": emit(setup_menu())
+    elif command == "setup": emit(setup_menu(force))
     elif command == "open-config": open_config_with_editor()
     elif command == "edit-config-agent": edit_config_with_agent()
     elif command == "global-search": emit(global_search_menu())

@@ -13,10 +13,16 @@ PROVIDER = ROOT / "bin" / "omalaunch-github"
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys
 args=sys.argv[1:]
+if args[:2] == ['auth', 'token']:
+    if os.environ.get('GH_AUTH_LOG'):
+        with open(os.environ['GH_AUTH_LOG'],'a') as f: f.write(' '.join(args)+'\n')
+    if os.environ.get('GH_AUTH_STATE','valid') == 'missing': raise SystemExit(1)
+    print('test-secret'); raise SystemExit(0)
 if args[:2] == ['auth', 'status']:
     if os.environ.get('GH_AUTH_LOG'):
-        with open(os.environ['GH_AUTH_LOG'],'a') as f: f.write('auth status github.com\n')
+        with open(os.environ['GH_AUTH_LOG'],'a') as f: f.write(' '.join(args)+'\n')
     state=os.environ.get('GH_AUTH_STATE','valid')
+    if os.environ.get('GH_MULTI_ACCOUNT') and '--active' not in args: raise SystemExit(1)
     if state == 'valid': raise SystemExit(0)
     print('not logged into github.com', file=sys.stderr); raise SystemExit(1)
 if os.environ.get('GH_FAIL'):
@@ -72,6 +78,8 @@ class ProviderTest(unittest.TestCase):
         self.log = self.bin / "gh.log"
         self.call_log = self.bin / "gh-calls.log"
         self.env = os.environ.copy()
+        self.env.pop("GH_TOKEN", None)
+        self.env.pop("GITHUB_TOKEN", None)
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env["PATH"]
         self.env["HOME"] = str(self.bin / "home")
         self.env["GH_LOG"] = str(self.log)
@@ -122,21 +130,48 @@ class ProviderTest(unittest.TestCase):
         setup = next(row for row in rows if row["id"] == "setup")
         self.assertEqual(setup["badge"], "Required")
         self.assertFalse(self.call_log.exists(), "authentication onboarding must not call the GitHub API")
+        auth_log = Path(self.env["GH_AUTH_LOG"])
+        self.assertNotIn("auth status", auth_log.read_text())
 
         actions = self.run_provider("setup")
         login = actions[0]
-        self.assertEqual(login["command"], ["xdg-terminal-exec", "--hold", "--", "gh",
-                                                   "auth", "login", "--hostname", "github.com"])
+        self.assertEqual(login["command"], ["xdg-terminal-exec", "--hold", "--", "env", "-u",
+            "GH_TOKEN", "-u", "GITHUB_TOKEN", "gh", "auth", "login", "--hostname", "github.com"])
         self.assertTrue(login["closeOnDispatch"])
-        self.assertEqual(actions[1]["submenu"]["command"], [str(PROVIDER), "setup"])
+        self.assertEqual(actions[1]["submenu"]["command"], [str(PROVIDER), "setup", "--refresh"])
         self.assertNotIn("scope", " ".join(login["command"]))
-        self.assertNotIn("token", json.dumps(rows + actions).lower())
 
         self.env["GH_AUTH_STATE"] = "valid"
-        ready = self.run_provider("setup")
+        ready = self.run_provider("setup", "--refresh")
         self.assertEqual(ready[0]["badge"], "Ready")
+        self.assertIn("--active", auth_log.read_text())
         self.assertNotIn("setup", [row["id"] for row in self.run_provider("root")])
         self.assertFalse(self.call_log.exists())
+
+    def test_env_token_root_is_local_and_setup_explains_override(self):
+        self.env["GH_TOKEN"] = "never-print-this"
+        rows = self.run_provider("root")
+        self.assertNotIn("setup", [row["id"] for row in rows])
+        self.assertFalse(Path(self.env["GH_AUTH_LOG"]).exists())
+        setup = self.run_provider("setup")
+        self.assertIn("launcher environment", setup[0]["description"])
+        self.assertIn("cannot replace", setup[0]["description"])
+        self.assertNotIn("never-print-this", json.dumps(setup))
+
+    def test_stored_credential_root_does_not_run_network_status(self):
+        rows = self.run_provider("root")
+        self.assertNotIn("setup", [row["id"] for row in rows])
+        log = Path(self.env["GH_AUTH_LOG"]).read_text()
+        self.assertIn("auth token --hostname github.com", log)
+        self.assertNotIn("auth status", log)
+
+    def test_recheck_uses_active_account_even_with_inactive_stale_account(self):
+        self.env["GH_AUTH_STATE"] = "valid"
+        self.env["GH_MULTI_ACCOUNT"] = "1"
+        ready = self.run_provider("setup", "--refresh")
+        self.assertEqual(ready[0]["badge"], "Ready")
+        self.assertIn("auth status --hostname github.com --active",
+                      Path(self.env["GH_AUTH_LOG"]).read_text())
 
     def test_configuration_menu_opens_editor_or_default_agent(self):
         rows = self.run_provider("configuration")
@@ -228,14 +263,14 @@ class ProviderTest(unittest.TestCase):
                                 capture_output=True, timeout=8)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
-        self.assertIn("authentication is invalid", result.stderr)
+        self.assertIn("GitHub CLI request failed", result.stderr)
 
     def test_api_failures_distinguish_auth_network_rate_and_permission_without_secrets(self):
         cases = (
             ("Bad credentials token ghp_supersecret", "authentication is invalid"),
             ("connection timed out", "could not be reached"),
             ("API rate limit exceeded", "rate limit reached"),
-            ("403 Resource not accessible by personal access token", "denied this request"),
+            ("HTTP 403 Resource not accessible by personal access token", "denied this request"),
         )
         for message, expected in cases:
             env = dict(self.env, GH_FAIL="1", GH_FAIL_MESSAGE=message)
@@ -245,6 +280,16 @@ class ProviderTest(unittest.TestCase):
             self.assertIn(expected, result.stderr)
             self.assertNotIn("ghp_supersecret", result.stderr)
         self.assertIn("will not expand", result.stderr)
+
+    def test_local_permission_and_proxy_auth_errors_are_neutral(self):
+        for message in ("permission denied opening local keyring", "Proxy Authentication Required"):
+            env = dict(self.env, GH_FAIL="1", GH_FAIL_MESSAGE=message)
+            result = subprocess.run([str(PROVIDER), "repositories"], env=env, text=True,
+                                    capture_output=True, timeout=8)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("GitHub CLI request failed", result.stderr)
+            self.assertNotIn("authentication is invalid", result.stderr)
+            self.assertNotIn("denied this request", result.stderr)
 
     def test_notification_rejects_non_github_api_host(self):
         env = self.env.copy()
