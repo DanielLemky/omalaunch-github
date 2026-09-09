@@ -30,6 +30,7 @@ if args[:2] == ['auth', 'status']:
     state=os.environ.get('GH_AUTH_STATE','valid')
     if os.environ.get('GH_MULTI_ACCOUNT') and '--active' not in args: raise SystemExit(1)
     if state == 'valid': raise SystemExit(0)
+    if state == 'transient': print('network is unreachable', file=sys.stderr); raise SystemExit(1)
     print('not logged into github.com', file=sys.stderr); raise SystemExit(1)
 if os.environ.get('GH_FAIL'):
     print(os.environ.get('GH_FAIL_MESSAGE','authentication required'), file=sys.stderr); raise SystemExit(4)
@@ -93,6 +94,10 @@ class ProviderTest(unittest.TestCase):
         self.env["GH_AUTH_LOG"] = str(self.bin / "gh-auth.log")
         self.env["LAUNCH_LOG"] = str(self.bin / "launch.log")
         self.env["XDG_STATE_HOME"] = str(self.bin / "state")
+        verified = subprocess.run([str(PROVIDER), "setup", "--refresh"], env=self.env,
+                                  text=True, capture_output=True, timeout=8)
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        Path(self.env["GH_AUTH_LOG"]).unlink(missing_ok=True)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -157,7 +162,8 @@ class ProviderTest(unittest.TestCase):
     def test_env_token_root_is_local_and_setup_explains_override(self):
         self.env["GH_TOKEN"] = "never-print-this"
         rows = self.run_provider("root")
-        self.assertNotIn("setup", [row["id"] for row in rows])
+        self.assertEqual([row["id"] for row in rows], ["setup"])
+        self.assertIn("must be verified", rows[0]["description"])
         self.assertFalse(Path(self.env["GH_AUTH_LOG"]).exists())
         setup = self.run_provider("setup")
         self.assertIn("launcher environment", setup[0]["description"])
@@ -195,6 +201,48 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(ready[0]["badge"], "Ready")
         self.assertIn("auth status --hostname github.com --active",
                       Path(self.env["GH_AUTH_LOG"]).read_text())
+
+    def test_pending_invalid_and_expired_auth_show_only_setup_without_api_requests(self):
+        self.env["GH_TOKEN"] = "configured-not-yet-verified"
+        self.write_config('{"version":1,"repositories":{"globalSearch":{"enabled":true}},'
+                          '"actions":{"topLevel":{"enabled":true,"repositories":["acme/widgets"]}}}')
+        for command in ("root", "global-search"):
+            self.assertEqual([row["id"] for row in self.run_provider(command)], ["setup"])
+        preload = self.run_provider("preload")
+        self.assertEqual([row["id"] for row in preload["globalSearchItems"]], ["setup"])
+        self.assertEqual(preload["topLevelItems"], [])
+        self.assertFalse(self.call_log.exists())
+
+        self.env["GH_AUTH_STATE"] = "invalid"
+        setup = self.run_provider("setup", "--refresh")
+        self.assertIn("invalid", setup[0]["description"])
+        self.assertEqual([row["id"] for row in self.run_provider("root")], ["setup"])
+        self.assertFalse(self.call_log.exists())
+
+        self.env["GH_AUTH_STATE"] = "valid"
+        self.assertEqual(self.run_provider("setup", "--refresh")[0]["badge"], "Ready")
+        self.assertIn("general:repositories", [row["id"] for row in self.run_provider("root")])
+        cache_file = self.auth_cache_file()
+        os.utime(cache_file, (0, 0))
+        self.assertEqual([row["id"] for row in self.run_provider("root")], ["setup"])
+        self.assertFalse(self.call_log.exists())
+
+    def test_transient_recheck_is_setup_only_and_preserves_stars(self):
+        self.run_provider("set-star", "general:issues", "true")
+        state_path = Path(self.env["XDG_STATE_HOME"]) / "omarchy/omalaunch/extensions/quantumfire.github.json"
+        before = state_path.read_bytes()
+        self.env["GH_AUTH_STATE"] = "transient"
+        setup = self.run_provider("setup", "--refresh")
+        self.assertIn("network was unavailable", setup[0]["description"])
+        self.assertEqual([row["id"] for row in self.run_provider("root")], ["setup"])
+        self.assertEqual(state_path.read_bytes(), before)
+        self.assertNotIn("test-secret", json.dumps(setup))
+
+    def test_manifest_keeps_gh_as_a_core_owned_requirement(self):
+        definition = json.loads((ROOT / "omalaunch.json").read_text())
+        self.assertIn("gh", definition["requires"])
+        self.assertNotIn("install", definition)
+        self.assertNotIn("setupCommand", definition)
 
     def test_configuration_menu_opens_editor_or_default_agent(self):
         rows = self.run_provider("configuration")
@@ -296,6 +344,7 @@ class ProviderTest(unittest.TestCase):
             ("HTTP 403 Resource not accessible by personal access token", "denied this request"),
         )
         for message, expected in cases:
+            self.run_provider("setup", "--refresh")
             env = dict(self.env, GH_FAIL="1", GH_FAIL_MESSAGE=message)
             result = subprocess.run([str(PROVIDER), "repositories"], env=env, text=True,
                                     capture_output=True, timeout=8)
@@ -360,7 +409,20 @@ class ProviderTest(unittest.TestCase):
 
     def cache_files(self):
         cache = Path(self.env["XDG_STATE_HOME"]) / "omarchy/omalaunch/extensions/quantumfire.github-cache"
-        return sorted(cache.glob("*.json"))
+        files = []
+        for path in sorted(cache.glob("*.json")):
+            try:
+                if "state" in json.loads(path.read_text()):
+                    continue
+            except (OSError, json.JSONDecodeError):
+                pass
+            files.append(path)
+        return files
+
+    def auth_cache_file(self):
+        cache = Path(self.env["XDG_STATE_HOME"]) / "omarchy/omalaunch/extensions/quantumfire.github-cache"
+        return next(path for path in cache.glob("*.json")
+                    if json.loads(path.read_text()).get("state"))
 
     def test_lists_use_cache_and_explicit_refresh_bypasses_it(self):
         self.run_provider("repositories")
